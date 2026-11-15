@@ -9,7 +9,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::drivers::{cpu, framebuffer, keyboard, rtc, timer};
+use crate::drivers::{cpu, framebuffer, keyboard, mouse, rtc, timer};
 use crate::memory;
 use crate::util;
 
@@ -218,10 +218,11 @@ fn info() -> Output {
         "Virtual memory"
     ));
     lines.push(format!(
-        "  {:<15} {} timer, {} keys",
+        "  {:<15} {} timer, {} kbd, {} mouse",
         "Interrupts",
         timer::interrupt_count(),
-        keyboard::interrupt_count()
+        keyboard::interrupt_count(),
+        mouse::interrupt_count()
     ));
     Output::text(lines)
 }

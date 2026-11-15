@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Drive NoorOS with QEMU monitor `sendkey` and capture screenshots.
+"""Drive NoorOS with the QEMU monitor and capture screenshots.
 
 Usage: scripts/interact.py OUT_DIR [--profile release]
 
-The sequence exercises the keyboard path end to end: desktop -> Noor Terminal
--> shell commands -> Noor Monitor -> Noor Launcher. No mouse is required.
+The sequence exercises both input paths end to end: the keyboard (desktop ->
+Noor Terminal -> shell commands -> Noor Monitor -> Noor Launcher) and then the
+mouse (click a launcher row, drag a title bar, close a window with [X], raise a
+window by clicking its title bar, launch an app from the taskbar).
+
+QEMU clamps a single PS/2 relative event, so long pointer jumps are split into
+small `mouse_move` steps and the script tracks the pointer itself.
 """
 
 import argparse
@@ -19,14 +24,19 @@ from capture import find_images  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KEY_DELAY = 0.12
+MOUSE_STEP = 100
+# A full repaint (launcher, several windows) can take over a second under TCG.
+SETTLE = 2.5
 
 
 class Monitor:
-    def __init__(self, path):
+    def __init__(self, path, screen=(1280, 720)):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.connect(path)
         self.sock.settimeout(0.5)
         self._drain()
+        # The kernel centres the pointer at boot; keep the same model here.
+        self.x, self.y = screen[0] // 2, screen[1] // 2
 
     def _drain(self):
         data = b""
@@ -66,6 +76,44 @@ class Monitor:
         time.sleep(0.3)
         print("captured", path)
 
+    def move_by(self, dx, dy):
+        """Relative pointer motion, split to respect the per-packet limit."""
+        steps = max(1, (max(abs(dx), abs(dy)) + MOUSE_STEP - 1) // MOUSE_STEP)
+        done_x = done_y = 0
+        for i in range(1, steps + 1):
+            next_x = dx * i // steps
+            next_y = dy * i // steps
+            self.command(f"mouse_move {next_x - done_x} {next_y - done_y}")
+            done_x, done_y = next_x, next_y
+            time.sleep(0.18)
+        self.x += dx
+        self.y += dy
+        time.sleep(0.25)
+
+    def move_to(self, x, y):
+        self.move_by(x - self.x, y - self.y)
+
+    def click(self):
+        self.command("mouse_button 1")
+        time.sleep(0.15)
+        self.command("mouse_button 0")
+        time.sleep(0.15)
+
+    def click_at(self, x, y):
+        self.move_to(x, y)
+        time.sleep(0.25)
+        self.click()
+        time.sleep(SETTLE)
+
+    def drag(self, start, end):
+        self.move_to(*start)
+        time.sleep(0.25)
+        self.command("mouse_button 1")
+        time.sleep(0.2)
+        self.move_by(end[0] - start[0], end[1] - start[1])
+        self.command("mouse_button 0")
+        time.sleep(SETTLE)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -101,6 +149,8 @@ def main():
 
     try:
         time.sleep(6.0)  # boot screen + desktop hand-off
+        # Park the pointer in empty desktop space for the hero shot.
+        mon.move_by(300, 200)
         mon.shot(os.path.join(out, "01-desktop.ppm"))
 
         mon.key("f2")  # Noor Terminal
@@ -154,6 +204,29 @@ def main():
         mon.key("f1")  # Noor Launcher
         time.sleep(2.5)
         mon.shot(os.path.join(out, "12-launcher.ppm"))
+
+        # --- Mouse -------------------------------------------------------
+        # Launcher is open with the keyboard selection on Noor Terminal.
+        mon.move_to(640, 260)
+        mon.shot(os.path.join(out, "13-mouse-launcher.ppm"))
+        mon.click_at(640, 260)  # click the Noor Terminal row
+
+        # Drag the focused terminal by its title bar.
+        mon.drag((500, 120), (600, 200))
+        mon.shot(os.path.join(out, "14-mouse-drag.ppm"))
+
+        # The window moved with the pointer: its close button is now at
+        # (290 + 900 - 33) + 10, (187 + 7) + 10.
+        mon.click_at(1167, 204)
+        mon.shot(os.path.join(out, "15-mouse-close.ppm"))
+
+        # Raise Noor Monitor by clicking its (mostly hidden) title bar.
+        mon.click_at(250, 90)
+        mon.shot(os.path.join(out, "16-mouse-zorder.ppm"))
+
+        # Launch Noor Terminal from the taskbar icon.
+        mon.click_at(435, 675)
+        mon.shot(os.path.join(out, "17-mouse-taskbar.ppm"))
 
         mon.command("quit")
     finally:

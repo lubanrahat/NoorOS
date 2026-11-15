@@ -1,15 +1,16 @@
 //! Interrupt descriptor table, PIC remapping and IRQ handlers.
 //!
-//! NoorOS installs a table with CPU exception handlers plus IRQ0 (PIT) and
-//! IRQ1 (PS/2 keyboard). All other vectors fall back to the CPU defaults; this
-//! is a minimal educational setup, not a complete fault-tolerant kernel.
+//! NoorOS installs a table with CPU exception handlers plus IRQ0 (PIT), IRQ1
+//! (PS/2 keyboard) and IRQ12 (PS/2 mouse). All other vectors fall back to the
+//! CPU defaults; this is a minimal educational setup, not a complete
+//! fault-tolerant kernel.
 
 use pic8259::ChainedPics;
 use spin::{Mutex, Once};
 use x86_64::instructions::port::Port;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
-use crate::drivers::{keyboard, timer};
+use crate::drivers::{keyboard, mouse, timer};
 
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
@@ -25,6 +26,8 @@ static IDT: Once<InterruptDescriptorTable> = Once::new();
 pub enum InterruptIndex {
     Timer = PIC_1_OFFSET,
     Keyboard,
+    /// PS/2 mouse: slave PIC line 4, so vector `PIC_2_OFFSET + 4` = 0x2C.
+    Mouse = PIC_2_OFFSET + 4,
 }
 
 impl InterruptIndex {
@@ -52,6 +55,7 @@ fn build_idt() -> InterruptDescriptorTable {
     idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
     idt[InterruptIndex::Timer.as_u8()].set_handler_fn(timer_handler);
     idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_handler);
+    idt[InterruptIndex::Mouse.as_u8()].set_handler_fn(mouse_handler);
     idt
 }
 
@@ -61,11 +65,15 @@ pub fn init() {
     unsafe {
         PICS.lock().initialize();
     }
-    // Unmask IRQ0 (timer) and IRQ1 (keyboard) on the master PIC; slave masked.
+    // Unmask IRQ0 (timer) and IRQ1 (keyboard) on the master PIC, plus IRQ2 so
+    // the slave can reach the CPU at all. On the slave only IRQ12 (PS/2 mouse)
+    // is unmasked.
+    //   master: 0xFF & !(0b0000_0111) = 0xF8
+    //   slave:  0xFF & !(0b0001_0000) = 0xEF
     // SAFETY: standard 8259A mask registers.
     unsafe {
-        Port::<u8>::new(0x21).write(0xFC);
-        Port::<u8>::new(0xA1).write(0xFF);
+        Port::<u8>::new(0x21).write(0xF8);
+        Port::<u8>::new(0xA1).write(0xEF);
     }
     x86_64::instructions::interrupts::enable();
 }
@@ -87,6 +95,19 @@ extern "x86-interrupt" fn keyboard_handler(_frame: InterruptStackFrame) {
     let byte = unsafe { Port::<u8>::new(0x60).read() };
     keyboard::on_scancode(byte);
     end_of_interrupt(InterruptIndex::Keyboard);
+}
+
+extern "x86-interrupt" fn mouse_handler(_frame: InterruptStackFrame) {
+    // Spurious IRQ12s do happen; never read a byte the controller has not
+    // actually received, or the packet parser would be fed garbage.
+    // SAFETY: port 0x64 is the 8042 status register.
+    let status = unsafe { Port::<u8>::new(0x64).read() };
+    if status & 0x01 != 0 {
+        // SAFETY: output buffer full, so port 0x60 holds the auxiliary byte.
+        let byte = unsafe { Port::<u8>::new(0x60).read() };
+        mouse::on_byte(byte);
+    }
+    end_of_interrupt(InterruptIndex::Mouse);
 }
 
 extern "x86-interrupt" fn breakpoint_handler(frame: InterruptStackFrame) {

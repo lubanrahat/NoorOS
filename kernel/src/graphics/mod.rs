@@ -45,4 +45,9 @@ impl Rect {
     pub fn center_x(&self) -> i32 {
         self.x + self.w / 2
     }
+
+    /// Whether `(x, y)` lies inside the rectangle (half-open on the far edges).
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.x && y >= self.y && x < self.right() && y < self.bottom()
+    }
 }

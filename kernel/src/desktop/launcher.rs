@@ -1,4 +1,7 @@
-//! Noor Launcher - the application launcher overlay.
+//! Noor Launcher - the modal application launcher overlay.
+//!
+//! Layout is shared between drawing and hit-testing via [`panel_rect`] and
+//! [`row_rect`], so a click always lands on the row it visually appears to hit.
 
 use alloc::format;
 
@@ -11,10 +14,23 @@ use crate::graphics::{Canvas, Rect};
 
 use crate::graphics::branding;
 
+const ROW_H: i32 = 58;
+
 pub enum LauncherAction {
     None,
     Launch(AppId),
     Close,
+}
+
+/// What a click on the launcher means.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LauncherHit {
+    /// The launcher is closed, or the click landed on its chrome.
+    None,
+    /// The click was outside the panel: dismiss the launcher.
+    Outside,
+    /// The click was on an application row.
+    Row(usize),
 }
 
 pub struct Launcher {
@@ -58,6 +74,23 @@ impl Launcher {
         }
     }
 
+    /// Resolves a mouse click against the launcher's geometry.
+    pub fn hit(&self, x: i32, y: i32, screen_w: i32, screen_h: i32) -> LauncherHit {
+        if !self.open {
+            return LauncherHit::None;
+        }
+        let panel = panel_rect(screen_w, screen_h);
+        if !panel.contains(x, y) {
+            return LauncherHit::Outside;
+        }
+        for index in 0..AppId::ALL.len() {
+            if row_rect(panel, index).contains(x, y) {
+                return LauncherHit::Row(index);
+            }
+        }
+        LauncherHit::None
+    }
+
     pub fn draw(&self, canvas: &mut Canvas, screen_w: i32, screen_h: i32) {
         if !self.open {
             return;
@@ -68,12 +101,8 @@ impl Launcher {
         // its contrast into the panel instead.
         fill_rect(canvas, 0, 0, screen_w, screen_h, Color::hex(0x05080F));
 
-        let w = (screen_w - 160).min(560);
-        let row_h = 58;
-        let h = 92 + AppId::ALL.len() as i32 * row_h + 44;
-        let x = (screen_w - w) / 2;
-        let y = (screen_h - h) / 2 - 24;
-        let rect = Rect::new(x, y, w, h);
+        let rect = panel_rect(screen_w, screen_h);
+        let (x, y, w, h) = (rect.x, rect.y, rect.w, rect.h);
         panel(canvas, rect, colors::SURFACE, 246, 16, colors::GOLD, 110);
 
         branding::draw_logo(canvas, x + 34, y + 32, 15, colors::GOLD);
@@ -88,10 +117,9 @@ impl Launcher {
         );
         fill_rect(canvas, x + 20, y + 70, w - 40, 1, colors::BORDER);
 
-        let mut row_y = y + 82;
         for (index, app) in AppId::ALL.iter().enumerate() {
             let selected = index == self.selected;
-            let item = Rect::new(x + 14, row_y, w - 28, row_h - 6);
+            let item = row_rect(rect, index);
             if selected {
                 fill_rounded_rect(
                     canvas,
@@ -126,18 +154,32 @@ impl Launcher {
                 let key = format!("F{}", index + 2);
                 draw_keycap(canvas, item.right() - 42, item.y + 17, &key, app.accent());
             }
-            row_y += row_h;
         }
 
         draw_text_centered(
             canvas,
             x + w / 2,
             y + h - 28,
-            "Up / Down  select      Enter  open      Esc  close",
+            "Up / Down  select      Enter  open      Esc  close      or click",
             1,
             Color::hex(0x6B7C97),
         );
     }
+}
+
+fn panel_rect(screen_w: i32, screen_h: i32) -> Rect {
+    let w = (screen_w - 160).min(560);
+    let h = 92 + AppId::ALL.len() as i32 * ROW_H + 44;
+    Rect::new((screen_w - w) / 2, (screen_h - h) / 2 - 24, w, h)
+}
+
+fn row_rect(panel: Rect, index: usize) -> Rect {
+    Rect::new(
+        panel.x + 14,
+        panel.y + 82 + index as i32 * ROW_H,
+        panel.w - 28,
+        ROW_H - 6,
+    )
 }
 
 fn draw_keycap(canvas: &mut Canvas, x: i32, y: i32, label: &str, accent: Color) {

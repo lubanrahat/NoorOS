@@ -89,7 +89,6 @@ impl KeyboardState {
 }
 
 static STATE: Mutex<KeyboardState> = Mutex::new(KeyboardState::new());
-static KEYSTROKES: AtomicU64 = AtomicU64::new(0);
 static INTERRUPTS: AtomicU64 = AtomicU64::new(0);
 static DROPPED: AtomicU64 = AtomicU64::new(0);
 
@@ -146,7 +145,6 @@ pub fn on_scancode(byte: u8) {
     if key == Key::Unknown {
         return;
     }
-    KEYSTROKES.fetch_add(1, Ordering::Relaxed);
     state.push(InputEvent {
         key,
         shift,
@@ -159,10 +157,6 @@ pub fn on_scancode(byte: u8) {
 /// IRQ handler can never interleave with this critical section.
 pub fn read() -> Option<InputEvent> {
     x86_64::instructions::interrupts::without_interrupts(|| STATE.lock().pop())
-}
-
-pub fn keystrokes() -> u64 {
-    KEYSTROKES.load(Ordering::Relaxed)
 }
 
 pub fn interrupt_count() -> u64 {

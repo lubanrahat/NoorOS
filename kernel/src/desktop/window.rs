@@ -37,6 +37,23 @@ impl Window {
         )
     }
 
+    /// The draggable part of the chrome.
+    pub fn title_rect(&self) -> Rect {
+        Rect::new(self.rect.x, self.rect.y, self.rect.w, TITLE_H)
+    }
+
+    /// The clickable area of the close button, including its plate.
+    ///
+    /// Drawing and hit-testing both use this rectangle so the button a user
+    /// sees is exactly the button the window manager reacts to.
+    pub fn close_rect(&self) -> Rect {
+        Rect::new(self.rect.right() - 33, self.rect.y + 7, 20, 20)
+    }
+
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        self.rect.contains(x, y)
+    }
+
     pub fn handle_key(&mut self, event: InputEvent) -> AppAction {
         self.state.handle_key(event)
     }
@@ -90,9 +107,10 @@ impl Window {
         );
 
         // Right-hand chrome: a small "x86_64" tag and the close button.
-        let close_rect = Rect::new(rect.right() - 30, rect.y + 10, 14, 14);
+        let close = self.close_rect();
+        let glyph = Rect::new(close.x + 3, close.y + 3, 14, 14);
         let tag = "x86_64";
-        let tag_x = close_rect.x - 16 - text_width(tag, 1);
+        let tag_x = close.x - 16 - text_width(tag, 1);
         if tag_x > rect.x + 160 {
             draw_text(canvas, tag_x, rect.y + 13, tag, 1, Color::hex(0x46566F));
         }
@@ -103,27 +121,27 @@ impl Window {
         };
         fill_rounded_rect(
             canvas,
-            close_rect.x - 3,
-            close_rect.y - 3,
-            20,
-            20,
+            close.x,
+            close.y,
+            close.w,
+            close.h,
             6,
             Color::hex(0x22304A),
         );
         line(
             canvas,
-            close_rect.x,
-            close_rect.y,
-            close_rect.x + 8,
-            close_rect.y + 8,
+            glyph.x,
+            glyph.y,
+            glyph.x + 8,
+            glyph.y + 8,
             close_color,
         );
         line(
             canvas,
-            close_rect.x + 8,
-            close_rect.y,
-            close_rect.x,
-            close_rect.y + 8,
+            glyph.x + 8,
+            glyph.y,
+            glyph.x,
+            glyph.y + 8,
             close_color,
         );
 

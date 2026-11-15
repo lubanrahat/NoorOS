@@ -1,4 +1,7 @@
 //! Top status bar and the floating Noor taskbar.
+//!
+//! Geometry lives in [`bar_rect`] and [`item_rect`] so that what is drawn and
+//! what the mouse hit-tests can never drift apart.
 
 use alloc::format;
 use alloc::string::String;
@@ -12,8 +15,55 @@ use crate::graphics::text::*;
 use crate::graphics::{Canvas, Rect};
 use crate::util;
 
+/// Height of the always-on-top status bar.
+pub const TOP_BAR_H: i32 = 30;
+
+/// Height of the floating taskbar.
+pub const BAR_H: i32 = 58;
+
+const BAR_ITEM_W: i32 = 82;
+/// Distance from the bar's left edge to the first clickable slot.
+const BAR_ITEM_X: i32 = 62;
+
+/// A clickable taskbar slot.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TaskbarItem {
+    Launcher,
+    App(AppId),
+}
+
+pub fn bar_rect(screen_w: i32, screen_h: i32) -> Rect {
+    let bar_w = (screen_w - 90).min(780);
+    Rect::new((screen_w - bar_w) / 2, screen_h - 74, bar_w, BAR_H)
+}
+
+/// Slot `index`: 0 is the launcher, `1..=AppId::ALL.len()` are the applications.
+pub fn item_rect(screen_w: i32, screen_h: i32, index: usize) -> Rect {
+    let bar = bar_rect(screen_w, screen_h);
+    Rect::new(
+        bar.x + BAR_ITEM_X + index as i32 * BAR_ITEM_W,
+        bar.y,
+        BAR_ITEM_W,
+        BAR_H,
+    )
+}
+
+/// Which slot, if any, contains the point.
+pub fn item_at(screen_w: i32, screen_h: i32, x: i32, y: i32) -> Option<TaskbarItem> {
+    for index in 0..=AppId::ALL.len() {
+        if item_rect(screen_w, screen_h, index).contains(x, y) {
+            return Some(if index == 0 {
+                TaskbarItem::Launcher
+            } else {
+                TaskbarItem::App(AppId::ALL[index - 1])
+            });
+        }
+    }
+    None
+}
+
 pub fn draw_top_bar(canvas: &mut Canvas, screen_w: i32) {
-    let h = 30;
+    let h = TOP_BAR_H;
     fill_rect_alpha(canvas, 0, 0, screen_w, h, colors::BG, 225);
     fill_rect_alpha(canvas, 0, h - 1, screen_w, 1, colors::BORDER, 190);
 
@@ -67,49 +117,48 @@ pub fn draw(
     focused: Option<AppId>,
     launcher_open: bool,
 ) {
-    let bar_w = (screen_w - 90).min(780);
-    let bar_h = 58;
-    let x = (screen_w - bar_w) / 2;
-    let y = screen_h - 74;
-    let rect = Rect::new(x, y, bar_w, bar_h);
-
+    let rect = bar_rect(screen_w, screen_h);
     panel(canvas, rect, colors::SURFACE, 238, 16, colors::BORDER, 210);
 
-    branding::draw_logo(canvas, x + 30, y + bar_h / 2, 13, colors::GOLD);
-    fill_rect(canvas, x + 52, y + 15, 1, bar_h - 30, colors::BORDER);
+    branding::draw_logo(canvas, rect.x + 30, rect.y + BAR_H / 2, 13, colors::GOLD);
+    fill_rect(
+        canvas,
+        rect.x + 52,
+        rect.y + 15,
+        1,
+        BAR_H - 30,
+        colors::BORDER,
+    );
 
-    let item_w = 82;
-    let mut item_x = x + 62;
-
-    // Launcher button
+    // Launcher button, then one slot per application.
+    let launcher = item_rect(screen_w, screen_h, 0);
     draw_item(
         canvas,
-        item_x,
-        y,
-        item_w,
+        launcher.x,
+        launcher.y,
+        launcher.w,
         "Launcher",
         None,
         launcher_open,
         false,
         true,
     );
-    item_x += item_w;
 
-    for app in AppId::ALL {
-        let is_running = running.contains(&app);
-        let is_focused = focused == Some(app);
+    for (offset, app) in AppId::ALL.iter().enumerate() {
+        let slot = item_rect(screen_w, screen_h, offset + 1);
+        let is_running = running.contains(app);
+        let is_focused = focused == Some(*app);
         draw_item(
             canvas,
-            item_x,
-            y,
-            item_w,
+            slot.x,
+            slot.y,
+            slot.w,
             app.short(),
-            Some(app),
+            Some(*app),
             is_running,
             is_focused,
             false,
         );
-        item_x += item_w;
     }
 
     // Clock + uptime on the right.
@@ -120,14 +169,15 @@ pub fn draw(
     let date = now
         .map(|t| t.date())
         .unwrap_or_else(|| String::from("----------"));
-    let right = x + bar_w - 18;
-    draw_text_right(canvas, right, y + 12, &time, 2, colors::TEXT);
-    draw_text_right(canvas, right, y + 34, &date, 1, colors::TEXT_DIM);
+    let right = rect.right() - 18;
+    draw_text_right(canvas, right, rect.y + 12, &time, 2, colors::TEXT);
+    draw_text_right(canvas, right, rect.y + 34, &date, 1, colors::TEXT_DIM);
 
+    let last_slot = item_rect(screen_w, screen_h, AppId::ALL.len());
     let uptime = format!("up {}", util::uptime(timer::uptime_ms()));
     let up_x = right - text_width(&time, 2) - 18;
-    if up_x - text_width(&uptime, 1) > item_x + 8 {
-        draw_text_right(canvas, up_x, y + 25, &uptime, 1, Color::hex(0x5A6B86));
+    if up_x - text_width(&uptime, 1) > last_slot.right() + 8 {
+        draw_text_right(canvas, up_x, rect.y + 25, &uptime, 1, Color::hex(0x5A6B86));
     }
 }
 

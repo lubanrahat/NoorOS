@@ -20,13 +20,13 @@ scratch in Rust. It boots through the `bootloader` 0.11 firmware interface on
 BIOS and UEFI, takes ownership of a linear framebuffer, and draws a complete
 graphical desktop without any underlying operating system, browser engine or
 graphics library. The kernel implements a real initialisation sequence,
-exception and IRQ handling, a PIT-driven clock, PS/2 keyboard input, a physical
-memory report and an 8 MiB kernel heap. On top of these it provides a window
-manager, a terminal with a ten-command shell, a system monitor, a settings
-application, an about window and a modal launcher. The project was verified by
-booting the release image in QEMU, scripting keyboard input, and capturing
-framebuffer evidence; shutdown and reboot were both confirmed. NoorOS
-deliberately omits virtual memory, user mode, scheduling, a mouse driver and
+exception and IRQ handling, a PIT-driven clock, PS/2 keyboard and mouse input, a
+physical memory report and an 8 MiB kernel heap. On top of these it provides a
+window manager with a graphical pointer, a terminal with a ten-command shell, a
+system monitor, a settings application, an about window and a modal launcher. The
+project was verified by booting the release image in QEMU, scripting keyboard and
+mouse input, and capturing framebuffer evidence; shutdown and reboot were both
+confirmed. NoorOS deliberately omits virtual memory, user mode, scheduling and
 hardware acceleration, and documents these omissions rather than simulating
 them.
 
@@ -44,8 +44,8 @@ something a person can use. NoorOS was built to make that layer tangible.
 The project's rule from the start was: **the pixels must be produced by the
 kernel**. A web page, an Electron shell, an HTML canvas or a Linux userspace
 process drawing a window would not demonstrate operating-system work. NoorOS
-therefore contains its own boot hand-off, interrupt table, timer, keyboard
-driver, memory reporting, allocator, text renderer, window manager and
+therefore contains its own boot hand-off, interrupt table, timer, keyboard and
+mouse drivers, memory reporting, allocator, text renderer, window manager and
 applications.
 
 ### 1.2 Aims
@@ -58,7 +58,8 @@ applications.
    unknown-command message.
 5. Report real hardware and memory facts, clearly labelling anything that is
    unavailable or unimplemented.
-6. Keep the implementation small enough to explain in a viva and to complete
+6. Make the desktop operable with a PS/2 mouse without losing the keyboard path.
+7. Keep the implementation small enough to explain in a viva and to complete
    within a short project window.
 
 ### 1.3 Objectives
@@ -71,8 +72,9 @@ applications.
 | O4 | Terminal and required commands | `03-help.png` ... `07-unknown.png` |
 | O5 | Monitor, Settings, About, Launcher | `08` ... `12` |
 | O6 | Honest memory and hardware reporting | `04-info.png`, `05-memory.png` |
-| O7 | Reproducible build and demo scripts | `Makefile`, `scripts/` |
-| O8 | Full documentation and viva preparation | this report, `docs/` |
+| O7 | Mouse: cursor, launch, focus, drag, close | `13` ... `17` |
+| O8 | Reproducible build and demo scripts | `Makefile`, `scripts/` |
+| O9 | Full documentation and viva preparation | this report, `docs/` |
 
 ---
 
@@ -117,8 +119,8 @@ base frequency of 1,193,182 Hz and divisor 11,931 it produces approximately
 100 ticks per second. NoorOS uses that tick as its monotonic clock.
 
 The interrupt descriptor table (IDT) tells the CPU where each handler lives.
-NoorOS installs handlers for the standard exceptions, page faults, and the timer
-and keyboard IRQs, and sends end-of-interrupt to the PIC after each IRQ.
+NoorOS installs handlers for the standard exceptions, page faults, the timer,
+keyboard and mouse IRQs, and sends end-of-interrupt to the PIC after each IRQ.
 
 ### 2.4 `no_std` Rust
 
@@ -143,9 +145,10 @@ remaining freestanding.
 | F4 | Provide Noor Terminal with `help`, `clear`, `about`, `info`, `memory`, `version`, `echo`, `uptime`, `shutdown`, `reboot` |
 | F5 | Print `Command not found. Type 'help' for available commands.` for unknown input |
 | F6 | Provide Noor Monitor, Noor Settings, About NoorOS and Noor Launcher |
-| F7 | Accept keyboard input and switch/close windows |
+| F7 | Accept keyboard and mouse input and switch/close windows |
 | F8 | Power off and reboot on request |
 | F9 | Report real memory, CPU, framebuffer and clock facts |
+| F10 | Draw a mouse cursor and launch, focus, drag and close windows with it |
 
 ### 3.2 Non-functional requirements
 
@@ -185,7 +188,7 @@ remaining freestanding.
 ├──────────────────────────────────────────────────────────────┤
 │                    Noor Kernel                               │
 │  init · panic/fatal · interrupts (IDT/PIC/PIT)               │
-│  drivers: framebuffer · serial · keyboard · RTC · CPUID · power│
+│  drivers: framebuffer · serial · keyboard · mouse · RTC · CPUID · power│
 │  memory: bootloader map · 8 MiB heap                         │
 ├──────────────────────────────────────────────────────────────┤
 │              bootloader 0.11 + BootInfo                      │
@@ -204,14 +207,15 @@ remaining freestanding.
 | `drivers/framebuffer` | Global framebuffer and drawing access |
 | `drivers/serial` | COM1 logging |
 | `drivers/keyboard` | PS/2 IRQ queue and scancode decoding |
+| `drivers/mouse` | 8042 auxiliary device, IRQ12 packet parser, pointer state |
 | `drivers/timer` | PIT programming, ticks, uptime, sleep |
 | `drivers/rtc` | CMOS date/time |
 | `drivers/cpu` | CPUID vendor, brand, family/model |
 | `drivers/power` | ACPI shutdown, 8042 reset |
-| `interrupts` | IDT, exception handlers, PIC remap, IRQ0/IRQ1 |
+| `interrupts` | IDT, exception handlers, PIC remap, IRQ0/IRQ1/IRQ12 |
 | `memory` | Memory map classification, heap statistics |
 | `graphics` | Canvas, primitives, text, fonts, branding |
-| `desktop` | Window manager, taskbar, launcher, event loop |
+| `desktop` | Window manager, cursor, taskbar, launcher, event loop |
 | `applications` | Terminal, Monitor, Settings, About, widgets |
 | `shell` | Command parser and implementations |
 | `util` | Byte formatting, uptime formatting, scanning helpers |
@@ -228,6 +232,7 @@ firmware
             ├─ 8 MiB heap init          ← before any allocation
             ├─ memory-map snapshot
             ├─ keyboard init
+            ├─ mouse init (aux device, streaming)
             ├─ PIT init (100 Hz)
             └─ IDT + PIC init, enable interrupts
                  ├─ boot.ok("Interrupts initialized", ...)
@@ -255,8 +260,19 @@ Keyboard routing is centralised:
 - With a window focused, all other keys go to that application.
 - The launcher is modal while open: it consumes keys and can launch or close.
 
+Mouse input has its own path:
+
+- IRQ12 assembles three-byte packets; `pointer()` exposes the newest position
+  (motion is coalesced) while `read_event()` queues button edges (never lost).
+- The desktop saves the pixels under the 13x21 cursor, draws the arrow and
+  restores them when it moves, so no compositor or double buffer is needed.
+- Button events are hit-tested in reverse paint order: taskbar, modal launcher,
+  then windows from the top of the stack down. A title-bar press focuses and
+  raises the window, then starts a drag; `[X]` closes it.
+
 The desktop loop blocks in `hlt` and repaints only when an event or a
-minute-boundary clock update marks it dirty. This is a deliberate performance
+minute-boundary clock update marks it dirty. Pointer motion that does not drag a
+window repaints only the cursor footprint. This is a deliberate performance
 decision explained in §5.7.
 
 ---
@@ -325,6 +341,17 @@ Keyboard decoding uses `pc-keyboard` 0.9 with scancode set 1 and a US 104-key
 map. Events are queued in a fixed 64-slot ring; the IRQ never allocates. The
 desktop drains the queue with interrupts disabled, so queue access is safe
 without a separate lock.
+
+The mouse uses the same 8042 controller but the auxiliary channel. During
+initialisation the kernel enables the aux port (`0xA8`), sets the aux-interrupt
+bit in the controller configuration byte while preserving the keyboard bits, and
+sends `0xF6`/`0xF4` through `0xD4` to restore defaults and start streaming. IRQ12
+is the slave PIC's line 4, mapped to vector `0x2C`; the master unmasks IRQ2 so
+the cascade can reach the CPU. The handler checks the status port before reading
+`0x60`, which makes a spurious interrupt harmless. Packets are three bytes: the
+first carries button and sign bits, the next two the X/Y deltas (PS/2 Y is
+inverted relative to screen Y). Overflow packets are discarded, and a first byte
+without the "always 1" bit restarts synchronisation.
 
 The RTC is read from CMOS, including the status-B binary/BCD and 12/24-hour
 bits. CPU facts come from CPUID; the brand string is only read if leaf

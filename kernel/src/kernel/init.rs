@@ -4,14 +4,14 @@
 //!   1. serial first, so every later failure is visible on the host,
 //!   2. framebuffer next, so failures can also be shown to the user,
 //!   3. heap, then the memory-map snapshot (the snapshot allocates),
-//!   4. keyboard parser, PIT and finally the IDT/PIC (interrupts on),
+//!   4. keyboard/mouse devices, PIT and finally the IDT/PIC (interrupts on),
 //!   5. desktop.
 
 use bootloader_api::BootInfo;
 
 use crate::boot::BootScreen;
 use crate::desktop;
-use crate::drivers::{cpu, framebuffer, keyboard, serial, timer};
+use crate::drivers::{cpu, framebuffer, keyboard, mouse, serial, timer};
 use crate::interrupts;
 use crate::{memory, util};
 
@@ -93,7 +93,14 @@ pub fn start(boot_info: &'static mut BootInfo) -> ! {
     );
 
     // --- Hardware ----------------------------------------------------------
+    // The mouse is programmed before the IDT is loaded: its configuration
+    // enables the auxiliary interrupt in the 8042, and IRQ12 must not become
+    // reachable before the handler and the PIC masks are in place.
     keyboard::init();
+    mouse::init(
+        framebuffer_info.width as i32,
+        framebuffer_info.height as i32,
+    );
     timer::init();
     interrupts::init();
     boot.ok(
@@ -103,7 +110,11 @@ pub fn start(boot_info: &'static mut BootInfo) -> ! {
 
     boot.ok(
         "Input subsystem initialized",
-        &alloc::format!("PS/2 keyboard on IRQ1 - {} keys", keyboard::keystrokes()),
+        if mouse::present() {
+            "PS/2 keyboard IRQ1, mouse IRQ12"
+        } else {
+            "PS/2 keyboard IRQ1, no mouse found"
+        },
     );
 
     let cpu = cpu::info();

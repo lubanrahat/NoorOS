@@ -54,12 +54,12 @@ explicit anti-goals in [section 8](#8-anti-goals-scope-discipline).
 |---|---|---|
 | Boot | BIOS + UEFI via `bootloader` 0.11.17 | Raw images are already dd-able |
 | Display | Linear framebuffer, 24/32 bpp, software rendering | QEMU supplies 1280x720 |
-| Interrupts | IDT, 8259 PIC remapped, IRQ0 (PIT 100 Hz), IRQ1 (keyboard) | No APIC, no SMP |
-| Input | PS/2 keyboard only | No mouse, no USB HID |
+| Interrupts | IDT, 8259 PIC remapped, IRQ0 (PIT 100 Hz), IRQ1 (keyboard), IRQ12 (mouse) | No APIC, no SMP |
+| Input | PS/2 keyboard and PS/2 mouse with a graphical pointer | No USB HID, no wheel |
 | Memory | Bootloader map report + fixed 8 MiB `.bss` heap | **No paging, no frame allocator** |
 | Concurrency | One address space, one thread of control | No processes, no scheduler |
 | Storage | None | No disk, no filesystem |
-| Desktop | Immediate-mode windows, taskbar, launcher | Keyboard-only, full-frame redraw |
+| Desktop | Immediate-mode windows, taskbar, launcher, mouse hit-testing | Full-frame redraw; cursor-only fast path |
 | Shell | 10 commands, scrollback, history | Static command set |
 | Power | ACPI port `0x604` + isa-debug-exit; 8042 reset | Shutdown only works under QEMU |
 | Tests | Scripted QEMU integration + screenshots | No unit tests for pure logic |
@@ -67,6 +67,9 @@ explicit anti-goals in [section 8](#8-anti-goals-scope-discipline).
 The honest summary: **0.1.0 is a real kernel with a real GUI, but it is a
 single-address-space demo, not an installable system.** Every remaining gap is
 named below.
+
+M1 (pointer input) was implemented on top of 0.1.0 ahead of the original 0.2
+schedule; its status is recorded in the milestone below.
 
 ---
 
@@ -98,6 +101,12 @@ Effort is given twice: **focused** = 30-40 hours/week on this alone;
 single developer working in Rust on an unfamiliar subsystem.
 
 ### M1: Pointer input (v0.2 Usable)
+
+**Status:** implemented in 0.1.0. `drivers/mouse.rs` brings up the auxiliary
+device, the IRQ12 handler assembles packets, `desktop/cursor.rs` draws a
+save-under arrow, and `Desktop::handle_mouse` covers taskbar, launcher,
+title-bar drag and `[X]`. The cursor-only repaint path replaces damage
+rectangles for pointer motion; general window damage tracking is still open.
 
 **Goal:** the desktop can be operated with a mouse, with no keyboard required
 for opening, focusing, moving or closing windows.
@@ -553,14 +562,13 @@ files, runs isolated programs, has a usable desktop", it waits.
 
 If work resumes tomorrow, this is the order:
 
-1. **M1** - PS/2 mouse, software cursor with save-under, hit-testing, and damage
-   rectangles for cursor movement and window drag. This is the single biggest
-   usability gain and it ships in days.
-2. **M2** - `make usb` with confirmations, `make vdi`, checksums, and the
+1. **M2** - `make usb` with confirmations, `make vdi`, checksums, and the
    firmware requirements in `README.md`. Turns the project into something a
    person can actually carry to a PC.
-3. **M3 first item** - ACPI FADT-based shutdown and reset, replacing the
+2. **M3 first item** - ACPI FADT-based shutdown and reset, replacing the
    `0x604` guess, so `shutdown` works on real hardware and not only under QEMU.
+3. **M1 follow-up** - general damage rectangles for window drag/open/close, so a
+   full frame is no longer needed when a window moves.
 
 After those three, the next gate is M5 (paging), because everything from M6
 onward depends on it.

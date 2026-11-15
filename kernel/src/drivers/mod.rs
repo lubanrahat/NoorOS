@@ -3,6 +3,7 @@
 pub mod cpu;
 pub mod framebuffer;
 pub mod keyboard;
+pub mod mouse;
 pub mod power;
 pub mod rtc;
 pub mod serial;

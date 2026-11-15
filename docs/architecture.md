@@ -102,7 +102,7 @@ it:
 | 3 | Heap | 8 MiB static `.bss` heap registered with `linked_list_allocator` |
 | 4 | Memory map | Bootloader regions classified; totals and a snapshot are stored |
 | 5 | Interrupts | IDT loaded, PIC remapped, PIT programmed to 100 Hz, interrupts enabled |
-| 6 | Input | `pc-keyboard` parser created; IRQ1 handler installed |
+| 6 | Input | `pc-keyboard` parser and PS/2 mouse configured; IRQ1/IRQ12 handlers installed |
 | 7 | CPU | `CPUID` leaves 0 and `0x8000_0002..4` read vendor, brand and family/model |
 | 8 | Desktop | `Desktop::new` builds the window manager and caches the wallpaper |
 
@@ -189,9 +189,11 @@ happen prints a diagnostic and a fatal screen instead of silently resetting.
 
 `interrupts::init` builds an IDT with handlers for the standard x86_64
 exceptions (divide error, breakpoint, invalid opcode, double fault, general
-protection, page fault, ...) plus IRQ0 and IRQ1. The 8259 PIC is remapped from
-vectors 8-15 to 32-47 so hardware IRQs no longer collide with CPU exceptions.
-Both PICs are masked except the timer and keyboard lines.
+protection, page fault, ...) plus IRQ0 (timer), IRQ1 (keyboard) and IRQ12
+(mouse). The 8259 PIC is remapped from vectors 8-15 to 32-47 so hardware IRQs no
+longer collide with CPU exceptions. The master PIC unmasks IRQ0/IRQ1 and IRQ2
+(the cascade into the slave); the slave unmasks only IRQ12, i.e. masks `0xF8`
+and `0xEF`.
 
 Each IRQ handler sends an end-of-interrupt to the PIC. Exceptions print the
 vector, error code and, for page faults, CR2 to the serial port and attempt to
@@ -219,7 +221,41 @@ control keys at the decoder level. IRQ1 pushes decoded events into a fixed
 `InputEvent` carries both the key and shift/ctrl/alt state. The queue counts
 drops; Noor Monitor shows them (`0 dropped` in the verified run).
 
-### 5.4 RTC and CPUID
+### 5.4 Mouse
+
+`drivers/mouse.rs` programs the 8042 auxiliary device through ports `0x64`
+(command/status) and `0x60` (data):
+
+1. read the controller configuration byte, set bit 1 (auxiliary interrupt) and
+   clear bit 5 (auxiliary clock disable), preserving the keyboard bits;
+2. send `0xD4` + `0xF6` to restore the mouse defaults,
+3. send `0xD4` + `0xF4` to enable data reporting.
+
+Every wait is bounded, so a machine without an auxiliary device still boots;
+`mouse::present()` reports whether a device answered, and the boot screen says
+"PS/2 keyboard IRQ1, mouse IRQ12" or "PS/2 keyboard IRQ1, no mouse found".
+
+The IRQ12 handler is vector `PIC_2_OFFSET + 4` = `0x2C`. It reads the status
+port first and only consumes a byte when the output buffer is full, so a
+spurious IRQ cannot inject garbage into the parser. Three-byte packets are
+assembled with the standard layout: byte 0 carries the button bits, the two sign
+bits and the overflow bits; bytes 1-2 are 9-bit signed X and Y deltas. Because
+PS/2 Y grows upwards, screen Y subtracts `dy`. The pointer is clamped to the
+framebuffer.
+
+Two kinds of state leave the driver:
+
+- `pointer()` returns the newest position and button snapshot. Motion is
+  **coalesced**: a slow frame never replays a backlog of stale positions.
+- `read_event()` returns queued button transitions. A press or release is never
+  coalesced, because losing a click would lose a user action.
+
+Both readers take the same lock as the handler, so they run with interrupts
+masked; NoorOS is single-CPU and a nested IRQ while holding the lock would
+spin forever. The handler itself only reads a port and updates a fixed-size
+struct: no allocation, no blocking.
+
+### 5.5 RTC and CPUID
 
 - **RTC:** CMOS ports `0x70/0x71`, register B used to detect binary vs BCD mode
   and 12/24-hour mode. The kernel reads the date and time for the status bars
@@ -230,7 +266,7 @@ drops; Noor Monitor shows them (`0 dropped` in the verified run).
   In QEMU the result is `AuthenticAMD`, `QEMU Virtual CPU version 2.5+`,
   family 15, model 107, hypervisor yes.
 
-### 5.5 Serial
+### 5.6 Serial
 
 The kernel writes a UART 16550 log at COM1, 115200 8N1. It is the primary
 diagnostic channel during boot and can be redirected to a file by the launcher.
@@ -297,11 +333,13 @@ The palette is fixed:
 
 `desktop/` is a small immediate-mode window system:
 
-- `Desktop` owns `Vec<Window>`, the focused index, the launcher, cached
-  wallpaper dimensions and the last tick.
+- `Desktop` owns `Vec<Window>`, the focused index, the launcher, the pointer
+  snapshot, the active drag, the cursor's save-under buffer, the cached
+  wallpaper and the last tick.
 - `Window` owns an `AppId`, a `Rect` and an `AppState`. It draws its shadow,
   body, title bar, close glyph and content, then delegates content rendering to
-  the application.
+  the application. `title_rect()` and `close_rect()` are shared by drawing and
+  hit-testing, so the button a user sees is the button the manager reacts to.
 - `AppId` supplies title, description, accent colour, default geometry, icon
   drawing and state construction. Windows cascade slightly so they do not stack
   exactly.
@@ -309,12 +347,54 @@ The palette is fixed:
   the bottom of the content.
 - The top status bar shows brand, uptime, kernel state, architecture, date and
   time. The floating taskbar shows the launcher button, one item per application,
-  uptime and a larger clock.
+  uptime and a larger clock. `taskbar::bar_rect`/`item_rect` are shared by the
+  renderer and `item_at`, so slots cannot drift apart.
 
 The launcher is modal: an opaque scrim covers the desktop, the panel lists the
 four applications with icons, descriptions and keycaps, and `Up/Down/Enter/Esc`
-drive it. The top bar and taskbar are drawn after the scrim so the clock and
+drive it. `launcher::panel_rect`/`row_rect` define both the drawing and the hit
+boxes. The top bar and taskbar are drawn after the scrim so the clock and
 running applications stay visible around the modal.
+
+### Mouse and the cursor
+
+The cursor is a 12x19 arrow plus a one-pixel alpha shadow. NoorOS has no second
+framebuffer, so the cursor uses **save-under**:
+
+1. before painting, copy the 13x21 pixels it will cover into a `Cursor` buffer,
+2. paint the shadow and the outlined arrow,
+3. before the next move or repaint, copy those pixels back.
+
+`Cursor::erase` must run before anything else repaints the region, so
+`Desktop::render` erases first and draws the cursor last. The saved pixels always
+describe the last *drawn* position, not the last requested one. This is what
+keeps the screen free of trails; the demo script verifies it by moving the
+pointer away and back and comparing the two frames byte for byte.
+
+Movement takes the cheap path. `Desktop::set_pointer` returns a `Repaint` value:
+
+| Value | When | Work |
+|---|---|---|
+| `None` | The pointer did not move | nothing |
+| `Cursor` | Pointer moved, no drag | restore and repaint 13x21 pixels |
+| `Full` | Pointer moved while dragging a title bar | repaint the whole desktop |
+
+### Hit-testing and z-order
+
+`Desktop::handle_mouse` consumes button edges in the same order the screen is
+painted:
+
+1. taskbar slots (`taskbar::item_at`) - launcher button and application icons;
+2. the modal launcher (`Launcher::hit`) - a row launches, a click outside
+   dismisses;
+3. windows from the top of the z-order down.
+
+Inside a window, `close_rect()` wins over `title_rect()`; the title bar focuses
+the window first (moving it to the top) and then records the grab offset for the
+drag; any other content click only focuses. Dragging clamps the window so at
+least 120 px stays on screen horizontally and the title bar never goes under the
+top status bar. Only the left button acts in 0.1.0; right and middle are tracked
+by the driver but unused.
 
 ### Rendering model
 
@@ -323,13 +403,18 @@ running applications stay visible around the modal.
 ```rust
 loop {
     let ticks = timer::ticks();
-    let mut dirty = false;
+    let mut full = false;
+    let mut cursor = false;
 
     // Repaint once per minute for the clock.
-    // Drain keyboard events; each event handles the key and marks dirty.
+    // Drain keyboard events; each event handles the key and marks a full frame.
+    // Coalesce pointer motion into the newest position.
+    // Drain mouse button edges and hit-test them.
 
-    if dirty {
+    if full {
         framebuffer::with(|canvas| desktop.render(canvas));
+    } else if cursor {
+        framebuffer::with(|canvas| desktop.render_cursor(canvas));
     }
 
     hlt();
@@ -337,7 +422,8 @@ loop {
 ```
 
 There is no 60 Hz timer and no animation loop. A full frame is expensive under
-QEMU TCG, so NoorOS repaints only when something changes. The terminal cursor
+QEMU TCG, so NoorOS repaints only when something changes. Pointer motion that
+does not drag a window repaints only the cursor footprint. The terminal cursor
 blinks at 2 Hz, but only while the terminal is focused; the desktop does not
 wake up to blink it. The percentage of time spent drawing is therefore low, at
 the cost of a static-looking desktop between events.
@@ -434,7 +520,8 @@ usable:
 3. add a 3-byte-per-pixel `fast_hline`,
 4. use block-sampled radial glows (6x6 blocks) instead of per-pixel distance,
 5. repaint on events only, not on a timer,
-6. use an opaque launcher scrim instead of full-screen alpha blending.
+6. repaint only the 13x21 cursor footprint while the pointer moves,
+7. use an opaque launcher scrim instead of full-screen alpha blending.
 
 The screenshots were taken with a 2.5 s settle time after each action for this
 reason.
@@ -444,11 +531,11 @@ reason.
 **Limitations in 0.1.0**
 
 - no paging, user mode, processes or scheduling,
-- no mouse and no pointer cursor,
-- no GPU/compositor, no damage tracking, no double buffering of windows,
+- no GPU/compositor, no general damage tracking, no double buffering of windows
+  (only the cursor footprint is repainted separately),
 - no filesystem, storage, networking, sound or SMP,
 - one bitmap font, ASCII/Latin glyphs only,
-- only PS/2 keyboard input; no USB HID,
+- PS/2 keyboard and mouse only; no USB HID, no wheel scrolling,
 - the 8 MiB heap is fixed at compile time,
 - UEFI support depends on OVMF and was verified with the pinned prebuilt.
 
@@ -456,11 +543,10 @@ reason.
 
 1. a page-frame allocator and a real virtual memory manager,
 2. user-mode processes and a syscall boundary,
-3. a PS/2 mouse driver plus pointer hit-testing,
-4. damage rectangles and partial redraws,
-5. a small ramdisk filesystem and a text editor,
-6. SMP bring-up with per-CPU data,
-7. UEFI runtime services and a proper boot menu.
+3. damage rectangles and partial window redraws,
+4. a small ramdisk filesystem and a text editor,
+5. SMP bring-up with per-CPU data,
+6. UEFI runtime services and a proper boot menu.
 
 Each would be a project in itself; 0.1.0 deliberately stops at a coherent,
 demonstrable single-address-space desktop.
