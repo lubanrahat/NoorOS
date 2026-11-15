@@ -1,0 +1,6 @@
+/target/
+**/__pycache__/
+*.ppm
+*.pyc
+.DS_Store
+serial.log

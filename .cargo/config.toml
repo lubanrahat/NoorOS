@@ -1,0 +1,7 @@
+# NoorOS build configuration.
+#
+# The kernel is a separate crate compiled for `x86_64-unknown-none` and linked
+# into the boot image by `build.rs`. Artifact dependencies are still an
+# unstable Cargo feature, so they must be enabled explicitly.
+[unstable]
+bindeps = true

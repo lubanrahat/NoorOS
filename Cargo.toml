@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = ["kernel"]
+
+[package]
+name = "nooros"
+version = "0.1.0"
+edition = "2024"
+description = "NoorOS - A Light Beyond Computing. A minimal graphical educational operating system."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+
+[build-dependencies]
+kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
+bootloader = "0.11.17"
+
+# The kernel is a bare-metal binary: no unwinder exists, so panics abort.
+# These profiles apply to the whole workspace, including the guest kernel.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = "thin"
