@@ -120,9 +120,17 @@ impl Desktop {
         let max_x = (self.screen_w - 120).max(120 - width);
         let max_y = (self.screen_h - TITLE_H - 8).max(TOP_BAR_H);
         let window = &mut self.windows[index];
+        let (old_x, old_y) = (window.rect.x, window.rect.y);
         window.rect.x = (pointer.x - drag.grab_dx).clamp(120 - width, max_x);
         window.rect.y = (pointer.y - drag.grab_dy).clamp(TOP_BAR_H, max_y);
-        Repaint::Full
+
+        // At a screen edge the window may already be clamped, while the
+        // pointer itself still moved. Only the cursor needs repainting then.
+        if window.rect.x == old_x && window.rect.y == old_y {
+            Repaint::Cursor
+        } else {
+            Repaint::Full
+        }
     }
 
     fn open_app(&mut self, app: AppId) {
@@ -234,6 +242,10 @@ impl Desktop {
             self.drag = None;
             return AppAction::None;
         }
+
+        // A fresh press supersedes any drag whose release edge was never
+        // delivered (for example because the event queue overflowed).
+        self.drag = None;
 
         let (x, y) = (event.pointer.x, event.pointer.y);
 

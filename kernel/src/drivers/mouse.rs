@@ -30,6 +30,7 @@ const CMD_ENABLE_AUX: u8 = 0xA8;
 const CMD_WRITE_AUX: u8 = 0xD4;
 
 // Auxiliary device commands.
+const AUX_DISABLE_REPORTING: u8 = 0xF5;
 const AUX_SET_DEFAULTS: u8 = 0xF6;
 const AUX_ENABLE_REPORTING: u8 = 0xF4;
 
@@ -140,18 +141,28 @@ impl MouseState {
     fn apply(&mut self, packet: [u8; 3]) {
         let flags = packet[0];
 
-        // Bits 6 and 7 report that a delta overflowed the 9-bit range. Such a
-        // packet carries no usable movement, so drop it.
-        if flags & 0xC0 != 0 {
-            return;
-        }
+        // Bits 6 and 7 report that a delta overflowed the 9-bit range. Only
+        // that axis is unusable; the other axis and the button bits are still
+        // valid, so discard the overflowing displacement instead of the whole
+        // packet.
+        let x_overflow = flags & 0x40 != 0;
+        let y_overflow = flags & 0x80 != 0;
 
-        // The deltas are 9-bit values: the low 8 bits are in the packet and the
-        // ninth is the sign bit in `flags`. Interpreting the byte as `i8` gives
-        // the correct signed value for everything except the -256/ +255 edge,
-        // which is only reachable with the overflow bit set.
-        let dx = packet[1] as i8 as i32;
-        let dy = packet[2] as i8 as i32;
+        // Deltas are 9-bit two's-complement values: the low eight bits are in
+        // the packet and the ninth is the sign bit in `flags`. Reading the low
+        // byte as `i8` would use bit 7 as the sign, which is wrong for every
+        // value outside -128..=127. Subtracting 256 when the flag sign bit is
+        // set reconstructs the full range.
+        let dx = if x_overflow {
+            0
+        } else {
+            packet[1] as i32 - (((flags & 0x10) as i32) << 4)
+        };
+        let dy = if y_overflow {
+            0
+        } else {
+            packet[2] as i32 - (((flags & 0x20) as i32) << 3)
+        };
 
         let buttons = Buttons {
             left: flags & 0x01 != 0,
@@ -207,13 +218,22 @@ fn wait_input_clear() -> bool {
     false
 }
 
-/// Waits for one byte from the controller.
-fn wait_output() -> Option<u8> {
+/// Waits for one byte from the controller itself (not the auxiliary device).
+///
+/// The config byte returned by `0x20` has the status "auxiliary data" bit
+/// clear. A mouse packet that raced with the command is discarded rather than
+/// misread as the reply.
+fn wait_controller_output() -> Option<u8> {
     for _ in 0..IO_TIMEOUT {
-        // Bit 0 = output buffer full.
-        if read_status() & 0x01 != 0 {
-            return Some(read_data());
+        let status = read_status();
+        if status & 0x01 == 0 {
+            continue;
         }
+        let byte = read_data();
+        if status & 0x20 != 0 || status & 0xC0 != 0 {
+            continue;
+        }
+        return Some(byte);
     }
     None
 }
@@ -249,25 +269,53 @@ fn flush_output() {
     }
 }
 
-/// Waits for the auxiliary device to acknowledge the last command.
-fn wait_ack() -> bool {
+/// The reply to an auxiliary-device command.
+enum Reply {
+    Ack,
+    Resend,
+    /// No reply, or something that is not a device reply.
+    Invalid,
+}
+
+/// Waits for the auxiliary device's reply to the last command.
+fn wait_reply() -> Reply {
     for _ in 0..IO_TIMEOUT {
-        if read_status() & 0x01 == 0 {
+        let status = read_status();
+        if status & 0x01 == 0 {
             continue;
         }
-        match read_data() {
-            ACK => return true,
-            RESEND => return false,
-            // Anything else is not a valid reply to a device command.
-            _ => return false,
+        let byte = read_data();
+        // Bit 5 says the byte came from the auxiliary port. Anything else is a
+        // keyboard byte or a controller response and must not be mistaken for
+        // our device's acknowledgement.
+        if status & 0x20 == 0 {
+            continue;
         }
+        return match byte {
+            ACK => Reply::Ack,
+            RESEND => Reply::Resend,
+            _ => Reply::Invalid,
+        };
     }
-    false
+    Reply::Invalid
 }
 
 /// Sends a byte to the mouse itself, via the controller's auxiliary channel.
+///
+/// The device may answer `RESEND` when a byte was corrupted; the protocol
+/// requires the command to be sent again, up to a small bounded retry count.
 fn aux_command(byte: u8) -> bool {
-    command(CMD_WRITE_AUX) && write_data(byte) && wait_ack()
+    for _ in 0..3 {
+        if !command(CMD_WRITE_AUX) || !write_data(byte) {
+            return false;
+        }
+        match wait_reply() {
+            Reply::Ack => return true,
+            Reply::Resend => continue,
+            Reply::Invalid => return false,
+        }
+    }
+    false
 }
 
 /// Programs the controller and the mouse. Returns whether a device answered.
@@ -285,7 +333,7 @@ fn configure() -> bool {
     if !command(CMD_READ_CONFIG) {
         return false;
     }
-    let Some(mut config) = wait_output() else {
+    let Some(mut config) = wait_controller_output() else {
         return false;
     };
     config |= 0x02;
@@ -293,6 +341,12 @@ fn configure() -> bool {
     if !command(CMD_WRITE_CONFIG) || !write_data(config) {
         return false;
     }
+    flush_output();
+
+    // Stop any stream the firmware may have left running. Otherwise a motion
+    // packet could arrive while we are still waiting for command replies and
+    // be mistaken for one.
+    let _ = aux_command(AUX_DISABLE_REPORTING);
     flush_output();
 
     // 0xF6: restore defaults (100 samples/s, 4 counts/mm, 1:1 scaling).

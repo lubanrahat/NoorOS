@@ -102,10 +102,15 @@ extern "x86-interrupt" fn mouse_handler(_frame: InterruptStackFrame) {
     // actually received, or the packet parser would be fed garbage.
     // SAFETY: port 0x64 is the 8042 status register.
     let status = unsafe { Port::<u8>::new(0x64).read() };
-    if status & 0x01 != 0 {
+    // Bit 0: output buffer full. Bit 5: the byte came from the auxiliary
+    // (mouse) port; a keyboard byte must be left for IRQ1. Bits 6/7: parity or
+    // timeout error, so the byte is corrupt and is read only to clear it.
+    if status & 0x01 != 0 && status & 0x20 != 0 {
         // SAFETY: output buffer full, so port 0x60 holds the auxiliary byte.
         let byte = unsafe { Port::<u8>::new(0x60).read() };
-        mouse::on_byte(byte);
+        if status & 0xC0 == 0 {
+            mouse::on_byte(byte);
+        }
     }
     end_of_interrupt(InterruptIndex::Mouse);
 }

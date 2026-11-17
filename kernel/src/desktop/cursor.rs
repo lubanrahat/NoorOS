@@ -8,7 +8,13 @@
 //! 1. [`Cursor::erase`] must run before anything else repaints the region.
 //!    `Desktop::render` therefore erases first and draws the cursor last.
 //! 2. The saved pixels belong to the last drawn position, never to the last
-//!    *requested* position, so clamping at the screen edge stays consistent.
+//!    *requested* position, so a clipped sprite at the screen edge stays
+//!    consistent.
+//!
+//! The arrow's hotspot is its top-left tip, and it is painted exactly at the
+//! pointer coordinate that the window manager hit-tests. Near the right or
+//! bottom edge the sprite is clipped by the framebuffer instead of being moved
+//! away from the pointer, so what the user aims at is what they click.
 
 use crate::graphics::Canvas;
 use crate::graphics::colors::{self, Color};
@@ -76,13 +82,13 @@ impl Cursor {
         }
     }
 
-    /// Moves the cursor to `(x, y)`, clamped so the whole arrow stays visible.
+    /// Moves the cursor so its hotspot sits exactly on `(x, y)`.
     ///
-    /// The caller's hit-testing uses the unclamped pointer position; clamping
-    /// here only affects where the sprite is painted.
+    /// The driver already clamps the pointer to the framebuffer, so the sprite
+    /// may be clipped at the right and bottom edges. Off-screen pixels are
+    /// skipped by the canvas and therefore never appear in the save-under
+    /// buffer, which keeps erasing correct.
     pub fn move_to(&mut self, canvas: &mut Canvas, x: i32, y: i32) {
-        let x = x.clamp(0, (canvas.width() - REGION_W).max(0));
-        let y = y.clamp(0, (canvas.height() - REGION_H).max(0));
         if self.drawn == Some((x, y)) {
             return;
         }
