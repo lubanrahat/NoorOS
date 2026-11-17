@@ -1,51 +1,62 @@
 INFO : Framebuffer info: FrameBufferInfo { byte_len: 2764800, width: 1280, height: 720, pixel_format: Bgr, bytes_per_pixel: 3, stride: 1280 }
 INFO : 4th Stage
-INFO : BiosInfo { stage_4: Region { start: 130000, len: 24980 }, kernel: Region { start: 1000000, len: 8c980 }, ramdisk: Region { start: 108d000, len: 0 }, config_file: Region { start: 108d000, len: d2 }, last_used_addr: 108d0d1, framebuffer: BiosFramebufferInfo { region: Region { start: fd000000, len: 2a3000 }, width: 500, height: 2d0, bytes_per_pixel: 3, stride: 500, pixel_format: Bgr }, memory_map_addr: 12244, memory_map_len: 7 }
+INFO : BiosInfo { stage_4: Region { start: 130000, len: 24980 }, kernel: Region { start: 1000000, len: a83f8 }, ramdisk: Region { start: 10a9000, len: 0 }, config_file: Region { start: 10a9000, len: d2 }, last_used_addr: 10a90d1, framebuffer: BiosFramebufferInfo { region: Region { start: fd000000, len: 2a3000 }, width: 500, height: 2d0, bytes_per_pixel: 3, stride: 500, pixel_format: Bgr }, memory_map_addr: 12244, memory_map_len: 7 }
 INFO : BIOS boot
 INFO : Elf file loaded at Pointer {
     addr: 0x0000000001000000,
-    metadata: 575872,
+    metadata: 689144,
 }
 INFO : virtual_address_offset: 0x10000000000
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: a674, mem_size: a674, align: 1000 })
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: a680, virtual_addr: b680, physical_addr: b680, file_size: 41c2f, mem_size: 41c2f, align: 1000 })
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 4c2b0, virtual_addr: 4e2b0, physical_addr: 4e2b0, file_size: 3028, mem_size: 3d50, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: ba7c, mem_size: ba7c, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: ba80, virtual_addr: ca80, physical_addr: ca80, file_size: 4d0ff, mem_size: 4d0ff, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 58b80, virtual_addr: 5ab80, physical_addr: 5ab80, file_size: 3800, mem_size: 4480, align: 1000 })
 INFO : Mapping bss section
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 4f2d8, virtual_addr: 522d8, physical_addr: 522d8, file_size: 3f0, mem_size: 801df0, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 5c380, virtual_addr: 5f380, physical_addr: 5f380, file_size: 670, mem_size: 1768, align: 1000 })
 INFO : Mapping bss section
-INFO : Entry point at: 0x100000375a0
-INFO : Creating GDT at PhysAddr(0x18c3000)
+INFO : Entry point at: 0x10000046ba0
+INFO : Creating GDT at PhysAddr(0x10db000)
 INFO : Map framebuffer
+INFO : Map physical memory
 INFO : Allocate bootinfo
 INFO : Create Memory Map
 INFO : Create bootinfo
-INFO : Jumping to kernel entry point at VirtAddr(0x100000375a0)
+INFO : Jumping to kernel entry point at VirtAddr(0x10000046ba0)
 
 ==============================================
  NoorOS 0.1.0 - Noor Kernel
  A Light Beyond Computing.
 ==============================================
-[boot] entered kernel; bootloader_api 0.11.17, kernel ELF at 0x1000000 (575872 bytes)
+[boot] entered kernel; bootloader_api 0.11.17, kernel ELF at 0x1000000 (689144 bytes)
 [boot] framebuffer 1280x720, stride 1280, 3 bpp, Bgr
-[kernel] heap: 8 MiB at 0x10000053000, 8 MiB free
+[kernel] memory init: physical memory offset 0x100000000000
+[kernel] frame bitmap: 131040 frames, 16384 bytes at physical 0x14EA000
+[kernel] frame allocator ready
+[kernel] frame allocator self-test: allocate/deallocate OK
+[kernel] active page tables captured from CR3
+[kernel] initial heap pages mapped
+[kernel] paging: active PML4 at 0x10AA000, physical offset 0x100000000000
+[kernel] frames: 129523 usable of 131040 addressable, 518 used, 129005 free (4 KiB each)
+[kernel] heap: 2 MiB mapped at 0x400000000000, 2 MiB usable, 0 B used
+[kernel] paging self-test: map/translate/unmap OK
 [boot] framebuffer size: 2 MiB
 [ OK ] Framebuffer initialized - 1280x720 - 3 bpp - Bgr
-[ OK ] Kernel heap initialized - 8 MiB linked-list heap in .bss
-[kernel] memory map: 11 regions, 502 MiB usable, 12 GiB reserved, 12 GiB total
+[ OK ] Virtual memory online - 129005 frames free
+[kernel] memory map: 11 regions, 506 MiB usable, 5 MiB reserved, 511 MiB total
   Usable           0x000000000000 - 0x00000009FC00  639 KiB
   Reserved (type 2) 0x00000009FC00 - 0x0000000A0000  1 KiB
   Reserved (type 2) 0x0000000F0000 - 0x000000100000  64 KiB
   Usable           0x000000100000 - 0x000001000000  15 MiB
-  Bootloader       0x000001000000 - 0x00000108D000  564 KiB
-  Usable           0x00000108D000 - 0x00000108E000  4 KiB
-  Bootloader       0x00000108E000 - 0x0000018D0000  8 MiB
-  Usable           0x0000018D0000 - 0x00001FFE0000  487 MiB
+  Bootloader       0x000001000000 - 0x0000010A9000  676 KiB
+  Usable           0x0000010A9000 - 0x0000010AA000  4 KiB
+  Bootloader       0x0000010AA000 - 0x0000014EA000  4 MiB
+  Usable           0x0000014EA000 - 0x00001FFE0000  490 MiB
   Reserved (type 2) 0x00001FFE0000 - 0x000020000000  128 KiB
   Reserved (type 2) 0x0000FFFC0000 - 0x000100000000  256 KiB
   Reserved (type 2) 0x00FD00000000 - 0x010000000000  12 GiB
-[ OK ] Memory map loaded - 11 regions - 502 MiB usable
+[ OK ] Memory map loaded - 11 regions - 506 MiB usable
+[mouse] PS/2 auxiliary device streaming on IRQ12
 [ OK ] Interrupts initialized - IDT loaded, PIC remapped, PIT at 100 Hz
-[ OK ] Input subsystem initialized - PS/2 keyboard on IRQ1 - 0 keys
+[ OK ] Input subsystem initialized - PS/2 keyboard IRQ1, mouse IRQ12
 [ OK ] CPU identified - AuthenticAMD - family 15 model 107
 [ OK ] Desktop environment initialized - Noor Desktop 0.1.0
 [desktop] handing over to Noor Desktop

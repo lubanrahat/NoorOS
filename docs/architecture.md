@@ -99,7 +99,7 @@ it:
 |---|---|---|
 | 1 | Bootloader hand-off | `BootInfo` received; framebuffer and memory map are available |
 | 2 | Framebuffer | `BootInfo.framebuffer` is consumed and installed in the driver |
-| 3 | Heap | 8 MiB static `.bss` heap registered with `linked_list_allocator` |
+| 3 | Virtual memory | Bitmap frame allocator built, CR3 captured, initial heap pages mapped |
 | 4 | Memory map | Bootloader regions classified; totals and a snapshot are stored |
 | 5 | Interrupts | IDT loaded, PIC remapped, PIT programmed to 100 Hz, interrupts enabled |
 | 6 | Input | `pc-keyboard` parser and PS/2 mouse configured; IRQ1/IRQ12 handlers installed |
@@ -111,14 +111,15 @@ but is not one of the visible `[ OK ]` steps.
 
 Two ordering constraints matter:
 
-- **The heap must exist before the first allocation.** The boot screen stores
-  `String` labels and details, and `serial_println!` allocates while formatting.
-  `memory::init_heap()` therefore runs before `BootScreen::new` and before any
-  `format!`.
+- **Memory must exist before the first allocation.** The boot screen stores
+  `String` labels and details, and `alloc::format!` allocates. `memory::init()`
+  therefore builds the frame allocator, captures the active PML4 and maps the
+  initial heap pages before `BootScreen::new` and before any `format!`.
 - **The boot screen's background must be freed before the desktop allocates.**
   The modelled wallpaper is a full framebuffer-sized buffer. `drop(boot)` runs
-  before `Desktop::new` caches its own wallpaper, so the 8 MiB heap holds only
-  one of them at a time.
+  before `Desktop::new` caches its own wallpaper, so the heap holds only one of
+  them at a time. The heap would grow on demand anyway, but freeing first avoids
+  mapping pages that are no longer needed.
 
 The boot screen's eight `[ OK ]` lines are pushed only after each step returns.
 There are no timed or fake messages; the visible boot order is the real call
@@ -126,7 +127,7 @@ order in `init.rs`.
 
 ## 4. Memory
 
-### 4.1 Physical map
+### 4.1 Physical map and frame allocator
 
 `memory::init_map` walks `BootInfo.memory_regions` and classifies each region:
 
@@ -136,49 +137,66 @@ order in `init.rs`.
 | `Bootloader` | Page tables, boot info, kernel loading structures |
 | `Reserved(u32)` | Firmware-reserved, with the raw E820/UEFI type tag |
 
-It computes usable, reserved and total bytes and stores a `Vec<Region>` snapshot
-for Noor Monitor, Noor Settings and the `memory` command.
+It computes usable and reserved bytes and stores a `Vec<Region>` snapshot for
+Noor Monitor, Noor Settings and the `memory` command. "Total RAM" ends at the
+highest usable address; QEMU's 12 GiB PCI MMIO hole is listed in the region table
+but is not counted as installed RAM.
 
-In the verified QEMU configuration the map contains 11 regions, 502 MiB usable,
-and a 12 GiB reserved MMIO hole at `0x00FD00000000`. The reported "12 GiB total"
-is the map's span, not installed RAM; NoorOS does not pretend otherwise.
+`memory::frame_allocator` owns 4 KiB physical frames. It sizes a bitmap from the
+highest usable frame, stores that bitmap in a reserved run of usable RAM (not a
+fixed `.bss` array), marks every non-usable frame used, and marks the bitmap's
+own frames used before the first allocation. The first MiB is also kept out of
+the allocator to avoid the IVT/BDA/EBDA/VGA region. Allocation returns a zeroed
+frame, which is exactly what a new page table needs.
 
-### 4.2 Kernel heap
+In the verified QEMU configuration the map contains 11 regions, 506 MiB usable,
+and about 129,500 allocatable frames after the bitmap and low-memory
+reservations.
 
-```rust
-const HEAP_SIZE: usize = 8 * 1024 * 1024;
+### 4.2 Active page tables
 
-#[repr(align(4096))]
-struct HeapStorage(UnsafeCell<[u8; HEAP_SIZE]>);
+`memory::paging` reads CR3 and accesses the active PML4 through the bootloader's
+physical-memory offset:
 
-static HEAP: HeapStorage = HeapStorage(UnsafeCell::new([0; HEAP_SIZE]));
-
-#[global_allocator]
-static ALLOCATOR: LockedHeap = LockedHeap::empty();
+```text
+virtual address of a table = 0x0000_1000_0000_0000 + table physical address
 ```
 
-`HEAP` lives in `.bss`, so the bootloader maps it and no page allocator is
-needed. `linked_list_allocator` provides a first-fit free list with coalescing.
+The public API is `map_page(page, frame, flags)`, `map_page_alloc(page, flags)`,
+`unmap_page(page)` and `translate_addr(address) -> Option<PhysAddr>`. It uses the
+`x86_64` crate's `OffsetPageTable` and `Mapper` traits, so intermediate tables are
+allocated on demand, huge pages are handled during translation, and every mapping
+change flushes the affected TLB entry. A boot-time self-test maps, translates and
+unmaps a scratch page to prove the live hierarchy is writable.
+
+All page-table access is serialised by one spin mutex. NoorOS is single-core and
+no IRQ handler maps or translates pages.
+
+### 4.3 Kernel heap
+
+The heap is a contiguous virtual range at `0x0000_4000_0000_0000` (PML4 slot
+128). Only 2 MiB are mapped at boot. The global allocator is a
+`linked_list_allocator::Heap` behind a mutex; when a first-fit allocation fails,
+`grow()` maps enough 4 KiB frames directly after the existing heap, calls
+`Heap::extend`, and retries. A partial mapping is rolled back so a later call can
+retry from the same virtual page.
+
 The heap backs every `String`, `Vec`, `format!`, window state and wallpaper
 buffer. It is protected by a spin lock, and NoorOS never allocates from an
-interrupt handler (the keyboard IRQ only writes into a fixed-size queue).
+interrupt handler (the keyboard and mouse IRQs only write into fixed-size
+queues). Lock order is heap → page tables → frame allocator; no path takes them
+in the opposite order.
 
-At runtime the heap reports 8 MiB total and about 2 MiB used with one terminal
-open; wallpapers and scrollback account for most of it.
+At runtime the boot screen and desktop wallpaper grow the heap from 2 MiB to
+about 4.6 MiB. The `memory` command shows the mapped size, the bytes in use, and
+a live heap virtual-to-physical translation.
 
-### 4.3 No virtual memory
+Consequences of this design:
 
-NoorOS has no page-table manager, no address-space abstraction, no user mode and
-no paging. The bootloader's mappings are used as-is. This is the single biggest
-limitation of the project and is stated in the `memory` command, Noor Settings,
-the report and this document.
-
-Consequences:
-
-- every pointer is physical/identity-mapped, and the kernel can read all RAM,
-- there is no memory protection between applications,
-- a wild write corrupts the kernel rather than faulting,
-- the heap is fixed at 8 MiB.
+- the kernel owns its page tables and can map/unmap arbitrary 4 KiB pages,
+- the heap grows on demand instead of having a compile-time ceiling,
+- there is still no demand paging, guard-page swapping or user-mode address
+  space, and a wild kernel write still corrupts the kernel rather than faulting.
 
 The IDT still handles page faults and other exceptions, so a fault that does
 happen prints a diagnostic and a fatal screen instead of silently resetting.
@@ -462,11 +480,11 @@ The terminal is the most complete application:
 
 `shell/commands.rs` implements ten commands. They read live kernel state:
 
-- `info` combines CPUID, framebuffer info, memory totals, heap stats, uptime and
-  RTC clock. Unimplemented features are labelled, e.g.
-  `Virtual memory  not implemented (no paging)`.
-- `memory` prints the full physical map (11 rows in QEMU), the heap line and the
-  paging limitation. The output is sized to fit the terminal viewport.
+- `info` combines CPUID, framebuffer info, memory totals, frame usage, heap
+  stats, uptime and RTC clock. It reports virtual memory as active.
+- `memory` prints physical RAM, frame allocator usage, the demand-grown heap,
+  and live virtual-to-physical translations for the heap, a kernel symbol and an
+  unmapped probe. The output is sized to fit the terminal viewport.
 - `version` prints NoorOS, Noor Kernel, target triple and allocator.
 - `uptime` prints uptime, PIT ticks, timer interrupts and the RTC clock.
 - `shutdown` writes the ACPI sleep type + enable bit to `PM1a_CNT` (`0x604`),
@@ -530,18 +548,18 @@ reason.
 
 **Limitations in 0.1.0**
 
-- no paging, user mode, processes or scheduling,
+- no demand paging, user mode, processes or scheduling,
 - no GPU/compositor, no general damage tracking, no double buffering of windows
   (only the cursor footprint is repainted separately),
 - no filesystem, storage, networking, sound or SMP,
 - one bitmap font, ASCII/Latin glyphs only,
 - PS/2 keyboard and mouse only; no USB HID, no wheel scrolling,
-- the 8 MiB heap is fixed at compile time,
+- the heap grows by mapping pages, but there is no reclaim/shrink path,
 - UEFI support depends on OVMF and was verified with the pinned prebuilt.
 
 **Natural next steps**
 
-1. a page-frame allocator and a real virtual memory manager,
+1. demand paging, guard pages and a user-mode address space,
 2. user-mode processes and a syscall boundary,
 3. damage rectangles and partial window redraws,
 4. a small ramdisk filesystem and a text editor,

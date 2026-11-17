@@ -33,11 +33,12 @@ simulation: the kernel is the program.
   hit-testing: taskbar launch, launcher rows, click-to-focus, drag by title bar
   and a per-window `[X]` close button.
 - A boot screen whose eight `[ OK ]` lines are printed only after each subsystem
-  has actually initialised: framebuffer, heap, memory map, interrupts, input,
-  CPUID, and the desktop.
-- A physical-memory report classified from the bootloader map, and an 8 MiB
-  static kernel heap in `.bss` backed by `linked_list_allocator` (so `String`,
-  `Vec` and `format!` work in the kernel).
+  has actually initialised: framebuffer, virtual memory, memory map, interrupts,
+  input, CPUID, and the desktop.
+- A bitmap physical-frame allocator built from the bootloader's memory map,
+  active 4-level page tables with `map_page`/`unmap_page`/`translate_addr`, and
+  a kernel heap whose pages are mapped on demand (so `String`, `Vec` and
+  `format!` work in the kernel).
 - A framebuffer graphics engine with 24/32-bit pixel-format handling, integer
   scaling, alpha blending, rounded panels, gradients and a `font8x8` bitmap font.
 - A window manager with z-order, focus, a floating taskbar, a top status bar, a
@@ -52,14 +53,16 @@ reading the source.
 
 NoorOS 0.1.0 is honest about its scope. It does **not** have:
 
-- virtual memory, page tables of its own, or demand paging,
+- demand paging, guard pages, or swapping (the heap grows explicitly when an
+  allocation needs more pages, rather than on a page fault),
 - user mode, processes, scheduling, or system calls,
 - GPU acceleration, a compositor, window damage tracking, or double buffering of
   arbitrary windows,
 - networking, storage drivers, a filesystem, sound, or SMP.
 
-The kernel prints `Paging: not implemented in this version.` in `memory`, and
-Noor Settings states that it is informational rather than a set of live switches.
+The `memory` command reports physical RAM, frame usage, heap growth and a live
+virtual-to-physical translation. Noor Settings states that it is informational
+rather than a set of live switches.
 
 ## 3. Quick start (macOS on Apple Silicon)
 
@@ -132,7 +135,7 @@ Mouse:
 | `clear` | Clear the terminal |
 | `about` | About NoorOS |
 | `info` | Live system information |
-| `memory` | Physical memory map and heap statistics |
+| `memory` | Physical RAM, frame allocator, heap and live translation |
 | `version` | Kernel version and build target |
 | `echo <text>` | Print text |
 | `uptime` | PIT ticks, uptime and RTC clock |
@@ -180,7 +183,7 @@ error, Alt+Tab and the mouse sequence, is in [`screenshots/demo/`](screenshots/d
 │       ├── boot/         Boot screen with real init steps
 │       ├── drivers/      Framebuffer, serial, keyboard, mouse, PIT, RTC, CPUID, power
 │       ├── interrupts/   IDT, exceptions, PIC, IRQ0/IRQ1/IRQ12
-│       ├── memory/       Bootloader memory map + 8 MiB heap
+│       ├── memory/       Frame allocator, active page tables, growable heap
 │       ├── graphics/     Canvas, primitives, text/fonts, branding
 │       ├── desktop/      Window manager, taskbar, launcher, mouse cursor
 │       ├── applications/ Terminal, Monitor, Settings, About, shared widgets
@@ -211,7 +214,8 @@ Verified during development:
 - BIOS boot and UEFI boot with OVMF both reach Noor Desktop.
 - `shutdown` exits QEMU with status 0.
 - `reboot` resets the guest and returns to a fresh desktop with uptime 1 s.
-- The terminal reports 502 MiB usable RAM, 11 regions, and 100 Hz timer ticks.
+- The terminal reports 506 MiB usable RAM, 11 regions, 129k allocatable 4 KiB
+  frames, a heap that grew from 2 MiB to about 4.6 MiB, and live translations.
 - The mouse path was verified with QEMU monitor `mouse_move`/`mouse_button`:
   the cursor tracks 1:1 with injected motion, a leave-and-return move restores
   the framebuffer pixel for pixel (no trails), and every hit-test listed in
@@ -226,7 +230,7 @@ Serial logs from both firmware paths are committed as
 - [Build and run on macOS](docs/setup-macos.md)
 - [Architecture](docs/architecture.md)
 - [University project report](docs/university-report.md)
-- [20 viva questions and answers](docs/viva-questions.md)
+- [22 viva questions and answers](docs/viva-questions.md)
 - [Demo guide](docs/demo-guide.md)
 - [Roadmap: USB boot, real hardware, installer](docs/roadmap.md)
 

@@ -30,9 +30,14 @@ use bootloader_api::{BootInfo, BootloaderConfig, entry_point};
 ///
 /// The stack is larger than the 80 KiB default because the desktop renders
 /// nested UI code; the framebuffer itself lives in bootloader-managed memory.
+/// The physical-memory mapping gives the kernel a window through which it can
+/// edit the active page tables and zero freshly allocated frames.
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
     config.kernel_stack_size = 128 * 1024;
+    config.mappings.physical_memory = Some(bootloader_api::config::Mapping::FixedAddress(
+        memory::PHYSICAL_MEMORY_OFFSET,
+    ));
     config
 };
 

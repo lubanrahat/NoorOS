@@ -1,42 +1,43 @@
-//! Physical memory inspection and the kernel heap.
+//! Physical frames, active page tables and the kernel heap.
 //!
-//! NoorOS does **not** implement a virtual memory manager or demand paging. What
-//! it does implement:
+//! NoorOS now has a real memory subsystem:
 //!
-//! * reads the bootloader's physical memory map and classifies every region,
-//! * reports usable/reserved totals (used by `memory` in Noor Terminal),
-//! * manages a fixed 8 MiB kernel heap in `.bss` with a linked-list allocator,
-//!   which backs `alloc` types (`String`, `Vec`, ...) throughout the kernel.
+//! * [`frame_allocator`] parses the bootloader's `MemoryRegions` and manages
+//!   4 KiB physical frames with a bitmap,
+//! * [`paging`] edits the active level-4 page table through the bootloader's
+//!   physical-memory offset (`map_page`, `unmap_page`, `translate_addr`),
+//! * [`heap`] is a contiguous virtual range whose pages are mapped on demand,
+//!   backing `alloc` types (`String`, `Vec`, ...) throughout the kernel.
 //!
-//! The framebuffer and kernel image are mapped by the bootloader; the kernel
-//! never creates page tables of its own. This limitation is stated in the
-//! report and in `memory` output.
+//! The framebuffer and kernel image are still mapped by the bootloader. The
+//! kernel now creates its own page-table entries for the heap and any other
+//! mapping requested through this module.
 
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU64, Ordering};
+mod frame_allocator;
+mod heap;
+mod paging;
 
 use alloc::vec::Vec;
+use bootloader_api::BootInfo;
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
-use linked_list_allocator::LockedHeap;
 use spin::Mutex;
+use x86_64::VirtAddr;
 
 use crate::util;
 
-const HEAP_SIZE: usize = 8 * 1024 * 1024;
+#[allow(unused_imports)]
+pub use frame_allocator::{FRAME_SIZE, FrameStats};
+pub use heap::{HEAP_BASE, HeapStats};
+#[allow(unused_imports)]
+pub use paging::{
+    PAGE_SIZE, PagingError, map_page, map_page_alloc, pml4_phys, translate_addr, unmap_page,
+};
+#[allow(unused_imports)]
+pub use x86_64::structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB};
 
-#[repr(align(4096))]
-struct HeapStorage(UnsafeCell<[u8; HEAP_SIZE]>);
-
-// SAFETY: the heap is only reachable through `ALLOCATOR`, which serialises all
-// access. There is a single CPU and no re-entrant allocation from IRQ handlers.
-unsafe impl Sync for HeapStorage {}
-
-static HEAP: HeapStorage = HeapStorage(UnsafeCell::new([0; HEAP_SIZE]));
-
-#[global_allocator]
-static ALLOCATOR: LockedHeap = LockedHeap::empty();
-
-static HEAP_SIZE_USED: AtomicU64 = AtomicU64::new(HEAP_SIZE as u64);
+/// Fixed virtual offset at which the bootloader maps all physical memory.
+/// Must match `BOOTLOADER_CONFIG` in `main.rs`.
+pub const PHYSICAL_MEMORY_OFFSET: u64 = 0x0000_1000_0000_0000;
 
 /// Classified view of one physical memory region.
 #[derive(Clone, Copy)]
@@ -74,38 +75,82 @@ impl RegionKind {
 }
 
 pub struct MemoryMap {
+    /// Every region reported by firmware, including reserved MMIO.
     pub regions: Vec<Region>,
+    /// Sum of the usable regions.
     pub usable_bytes: u64,
+    /// Installed RAM below `total_bytes` that is not usable.
     pub reserved_bytes: u64,
+    /// Highest usable physical address: installed RAM, not the map's span.
     pub total_bytes: u64,
 }
 
 static MAP: Mutex<Option<&'static MemoryMap>> = Mutex::new(None);
 
-/// Initialises the kernel heap. Called before anything allocates.
-pub fn init_heap() {
-    // SAFETY: `HEAP` is a unique static buffer, initialised exactly once and
-    // never used for anything else.
-    unsafe {
-        ALLOCATOR.lock().init(HEAP.0.get() as *mut u8, HEAP_SIZE);
-    }
-    // Read the free count *before* formatting: the allocator lock must be
-    // released before `util::bytes` allocates its own `String`, otherwise the
-    // non-reentrant spinlock would deadlock.
-    let free = ALLOCATOR.lock().free() as u64;
+/// Initialises the frame allocator, the active page tables and the heap.
+///
+/// Must run before anything allocates. The bootloader must be configured with a
+/// physical-memory mapping; [`PHYSICAL_MEMORY_OFFSET`] is the address NoorOS
+/// requests.
+pub fn init(boot_info: &BootInfo) -> Result<(), &'static str> {
+    let offset = boot_info
+        .physical_memory_offset
+        .into_option()
+        .ok_or("the bootloader did not map physical memory")?;
+    let phys_offset = VirtAddr::new(offset);
+    serial_println!("[kernel] memory init: physical memory offset {:#X}", offset);
+
+    frame_allocator::init(&boot_info.memory_regions, phys_offset)?;
+    serial_println!("[kernel] frame allocator ready");
+    frame_allocator::self_test()?;
+    serial_println!("[kernel] frame allocator self-test: allocate/deallocate OK");
+    paging::init(phys_offset).map_err(|_| "cannot initialise the active page tables")?;
+    serial_println!("[kernel] active page tables captured from CR3");
+    heap::init()?;
+    serial_println!("[kernel] initial heap pages mapped");
+
+    // Prove that mapping, translation and unmapping work on the live table.
+    paging::self_test()?;
+
+    let frames = frame_allocator::stats();
+    let heap = heap::stats();
     serial_println!(
-        "[kernel] heap: {} at {:p}, {} free",
-        util::bytes(HEAP_SIZE as u64),
-        HEAP.0.get(),
-        util::bytes(free)
+        "[kernel] paging: active PML4 at {:#X}, physical offset {:#X}",
+        pml4_phys().map(|address| address.as_u64()).unwrap_or(0),
+        phys_offset.as_u64()
     );
+    serial_println!(
+        "[kernel] frames: {} usable of {} addressable, {} used, {} free ({} KiB each)",
+        frames.usable,
+        frames.total,
+        frames.used,
+        frames.free,
+        FRAME_SIZE / 1024
+    );
+    serial_println!(
+        "[kernel] heap: {} mapped at {:#X}, {} usable, {} used",
+        util::bytes(heap.mapped),
+        heap.base,
+        util::bytes(heap.size),
+        util::bytes(heap.used)
+    );
+    serial_println!("[kernel] paging self-test: map/translate/unmap OK");
+    Ok(())
 }
 
 /// Builds an immutable snapshot of the bootloader memory map.
 pub fn init_map(regions: &[MemoryRegion]) -> &'static MemoryMap {
     let mut snapshot: Vec<Region> = Vec::with_capacity(regions.len());
     let mut usable = 0u64;
-    let mut total = 0u64;
+    // Physical RAM ends at the highest usable address. Firmware also reports
+    // large reserved MMIO ranges (QEMU's PCI hole ends at 1 TiB); counting
+    // those as "RAM" would make the totals meaningless.
+    let total = regions
+        .iter()
+        .filter(|region| region.kind == MemoryRegionKind::Usable)
+        .map(|region| region.end)
+        .max()
+        .unwrap_or(0);
 
     for region in regions {
         let kind = match region.kind {
@@ -118,7 +163,6 @@ pub fn init_map(regions: &[MemoryRegion]) -> &'static MemoryMap {
         if kind == RegionKind::Usable {
             usable += region.end - region.start;
         }
-        total += region.end - region.start;
         snapshot.push(Region {
             start: region.start,
             len: region.end - region.start,
@@ -158,22 +202,22 @@ pub fn map() -> Option<&'static MemoryMap> {
     *MAP.lock()
 }
 
-pub struct HeapStats {
-    pub used: u64,
-    pub free: u64,
-    pub size: u64,
+/// Physical-frame usage. `usable` is the number of frames that were free after
+/// the bitmap's own storage was reserved; `used` counts frames handed out since.
+pub fn frame_stats() -> FrameStats {
+    frame_allocator::stats()
 }
 
 pub fn heap_stats() -> HeapStats {
-    let heap = ALLOCATOR.lock();
-    HeapStats {
-        used: heap.used() as u64,
-        free: heap.free() as u64,
-        size: HEAP_SIZE_USED.load(Ordering::Relaxed),
-    }
+    heap::stats()
 }
 
-/// Heap size in bytes (kept in an atomic so the UI never needs a lock).
+/// Usable heap size in bytes. The heap grows on demand, so this can increase
+/// while the kernel is running.
 pub fn heap_capacity() -> u64 {
-    HEAP_SIZE_USED.load(Ordering::Relaxed)
+    heap::stats().size
+}
+
+pub fn heap_base() -> VirtAddr {
+    VirtAddr::new(HEAP_BASE)
 }

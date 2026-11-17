@@ -21,12 +21,13 @@ BIOS and UEFI, takes ownership of a linear framebuffer, and draws a complete
 graphical desktop without any underlying operating system, browser engine or
 graphics library. The kernel implements a real initialisation sequence,
 exception and IRQ handling, a PIT-driven clock, PS/2 keyboard and mouse input, a
-physical memory report and an 8 MiB kernel heap. On top of these it provides a
+bitmap physical-frame allocator, active x86_64 page tables and a demand-grown
+kernel heap. On top of these it provides a
 window manager with a graphical pointer, a terminal with a ten-command shell, a
 system monitor, a settings application, an about window and a modal launcher. The
 project was verified by booting the release image in QEMU, scripting keyboard and
 mouse input, and capturing framebuffer evidence; shutdown and reboot were both
-confirmed. NoorOS deliberately omits virtual memory, user mode, scheduling and
+confirmed. NoorOS deliberately omits demand paging, user mode, scheduling and
 hardware acceleration, and documents these omissions rather than simulating
 them.
 
@@ -189,7 +190,7 @@ remaining freestanding.
 │                    Noor Kernel                               │
 │  init · panic/fatal · interrupts (IDT/PIC/PIT)               │
 │  drivers: framebuffer · serial · keyboard · mouse · RTC · CPUID · power│
-│  memory: bootloader map · 8 MiB heap                         │
+│  memory: frame allocator · page tables · growable heap       │
 ├──────────────────────────────────────────────────────────────┤
 │              bootloader 0.11 + BootInfo                      │
 ├──────────────────────────────────────────────────────────────┤
@@ -213,7 +214,7 @@ remaining freestanding.
 | `drivers/cpu` | CPUID vendor, brand, family/model |
 | `drivers/power` | ACPI shutdown, 8042 reset |
 | `interrupts` | IDT, exception handlers, PIC remap, IRQ0/IRQ1/IRQ12 |
-| `memory` | Memory map classification, heap statistics |
+| `memory` | Frame allocator, active page tables, growable heap, map statistics |
 | `graphics` | Canvas, primitives, text, fonts, branding |
 | `desktop` | Window manager, cursor, taskbar, launcher, event loop |
 | `applications` | Terminal, Monitor, Settings, About, widgets |
@@ -229,7 +230,8 @@ firmware
             ├─ disable interrupts
             ├─ serial init + banner
             ├─ framebuffer from BootInfo
-            ├─ 8 MiB heap init          ← before any allocation
+            ├─ frame allocator + active page tables
+            ├─ initial heap pages mapped   ← before any allocation
             ├─ memory-map snapshot
             ├─ keyboard init
             ├─ mouse init (aux device, streaming)
@@ -303,32 +305,47 @@ select the newest image by modification time.
 
 ### 5.2 Memory
 
-The kernel heap is a statically reserved 8 MiB array in `.bss`, aligned to 4 KiB
-and registered with `linked_list_allocator`:
+The memory subsystem has three layers.
 
-```rust
-#[repr(align(4096))]
-struct HeapStorage(UnsafeCell<[u8; HEAP_SIZE]>);
+**Bitmap frame allocator.** `memory::frame_allocator` sizes a bitmap from the
+highest usable frame in `BootInfo.memory_regions`, places the bitmap itself in a
+reserved run of usable RAM, and marks every non-usable frame (kernel, bootloader,
+firmware reservations, MMIO) as used. The first MiB and the bitmap's own frames
+are reserved before the first allocation. Allocation returns a zeroed 4 KiB frame,
+which is required for new page tables.
 
-static HEAP: HeapStorage = HeapStorage(UnsafeCell::new([0; HEAP_SIZE]));
+**Active page tables.** The bootloader maps all physical memory at
+`0x0000_1000_0000_0000`. `memory::paging` reads CR3 and uses that offset to edit
+the active PML4 with the `x86_64` crate's `OffsetPageTable` and `Mapper` traits.
+The public operations are `map_page`, `map_page_alloc`, `unmap_page` and
+`translate_addr`; missing intermediate tables are allocated on demand and TLB
+entries are flushed. A boot-time self-test maps, translates and unmaps a scratch
+page. All table access is serialised by one spin mutex because NoorOS is
+single-core and no IRQ handler maps pages.
 
-#[global_allocator]
-static ALLOCATOR: LockedHeap = LockedHeap::empty();
-```
+**Demand-grown heap.** The heap occupies a contiguous virtual range at
+`0x0000_4000_0000_0000`; only 2 MiB are mapped at boot. When
+`linked_list_allocator` cannot satisfy an allocation, `grow()` maps enough frames
+directly after the existing heap, calls `Heap::extend` and retries. A partial
+mapping is rolled back. Lock order is heap → page tables → frame allocator, and
+no path takes them in the opposite order.
 
-Because `.bss` is mapped by the bootloader, no page allocator is required. The
-tradeoff is a hard 8 MiB ceiling. During development this produced a real bug: a
-`serial_println!` inside the allocator's `free()` path re-entered the allocator
-and deadlocked. The fix reads the accounting value into a local before taking
-the lock, and the heap is now initialised before any formatting.
+This design was learned partly from failure. A static 8 MiB `.bss` heap had a hard
+ceiling, and an earlier formatted log call inside the allocator's free path
+re-entered the allocator and deadlocked. The current code never formats while the
+heap lock is held, and it releases the lock before growing. The boot screen and
+wallpaper now grow the heap from 2 MiB to about 4.6 MiB, which the `memory`
+command displays.
 
 The bootloader memory map is classified into `Usable`, `Bootloader` and
-`Reserved(tag)` regions. In QEMU the snapshot contains 11 regions, 502 MiB
-usable and a 12 GiB reserved MMIO range, which the UI reports literally.
+`Reserved(tag)` regions. In QEMU the snapshot contains 11 regions, 506 MiB
+usable, and a 12 GiB reserved PCI MMIO hole. "Total RAM" ends at the highest
+usable address, so the MMIO hole is listed in the region table but is not counted
+as installed RAM.
 
-There is no virtual memory. The kernel uses the bootloader's identity mappings
-for its entire lifetime. Page-fault handling exists only so that a fault can be
-reported rather than silently resetting the machine.
+There is no demand paging, guard-page swapping or user-mode address space yet.
+Page-fault handling exists so that a fault is reported rather than silently
+resetting the machine.
 
 ### 5.3 Interrupts and devices
 
@@ -369,7 +386,9 @@ The renderer uses:
 - a 3-byte `fast_hline` using `as_chunks_mut::<3>()`,
 - rounded rectangles built from horizontal spans with corner tests,
 - block-sampled radial glows (6x6 sample blocks),
-- cached boot and desktop wallpapers blitted from heap buffers.
+- cached boot and desktop wallpapers blitted from heap buffers,
+- a save-under software cursor: the 13x21 pixels under the arrow are copied
+  out, the arrow is drawn, and those pixels are restored before the next move.
 
 The palette is centralised in `graphics/colors.rs`, so the visual identity is
 consistent across boot, desktop and applications.
@@ -449,11 +468,12 @@ Because the artefact is an operating system, testing is behaviour-driven:
 
 1. build the release image,
 2. boot it in QEMU with a monitor socket and serial log,
-3. send real keyboard events through QEMU's `sendkey`,
+3. send real keyboard events through QEMU's `sendkey` and real mouse events
+   through `mouse_move`/`mouse_button`,
 4. capture the framebuffer with `screendump`,
 5. inspect the serial log for boot steps and failures.
 
-`scripts/interact.py` automates the full sequence and writes thirteen PNGs.
+`scripts/interact.py` automates the full sequence and writes seventeen PNGs.
 `scripts/capture.py` handles boot screenshots and UEFI/BIOS experiments. These
 are integration tests against the actual machine, not mocks.
 
@@ -476,6 +496,13 @@ are integration tests against the actual machine, not mocks.
 | About | `F5` | Pass |
 | Window cycling | `Alt+Tab` | Pass: focus moves |
 | Launcher | `F1` | Pass: modal list, chrome visible |
+| Cursor motion | `mouse_move` | Pass: tracks injected deltas 1:1 |
+| No cursor trails | move away and back, compare frames | Pass: frames identical |
+| Taskbar launch | click the Terminal icon | Pass |
+| Title-bar drag | press, move (+100, +80), release | Pass: window follows |
+| Close button | click `[X]` | Pass: window removed |
+| Click-to-raise | click a partly covered title bar | Pass: window moves to front |
+| Launcher by mouse | click taskbar Launcher, then a row | Pass |
 | Shutdown | `shutdown` | Pass: QEMU exits 0 |
 | Reboot | `reboot` | Pass: fresh desktop, uptime 1 s |
 | Clippy | `cargo clippy --release` | Pass: no warnings |
@@ -497,6 +524,11 @@ are integration tests against the actual machine, not mocks.
 | `10-about.png` | About NoorOS |
 | `11-alt-tab.png` | Focus cycling |
 | `12-launcher.png` | Launcher with desktop chrome |
+| `13-mouse-launcher.png` | Pointer over a launcher row |
+| `14-mouse-drag.png` | Title-bar drag in progress |
+| `15-mouse-close.png` | Window closed with `[X]`, focus moved |
+| `16-mouse-zorder.png` | Click-to-raise z-order |
+| `17-mouse-taskbar.png` | App launched from the taskbar |
 
 ### 6.4 Serial evidence (excerpt)
 
@@ -507,13 +539,23 @@ are integration tests against the actual machine, not mocks.
 ==============================================
 [boot] entered kernel; bootloader_api 0.11.17, kernel ELF at 0x1000000
 [boot] framebuffer 1280x720, stride 1280, 3 bpp, Bgr
-[kernel] heap: 8 MiB at 0x10000054000, 8 MiB free
+[kernel] memory init: physical memory offset 0x100000000000
+[kernel] frame bitmap: 131040 frames, 16384 bytes at physical 0x14EA000
+[kernel] frame allocator ready
+[kernel] frame allocator self-test: allocate/deallocate OK
+[kernel] active page tables captured from CR3
+[kernel] initial heap pages mapped
+[kernel] paging: active PML4 at 0x10A9000, physical offset 0x100000000000
+[kernel] frames: 129523 usable of 131040 addressable, 518 used, 129005 free
+[kernel] heap: 2 MiB mapped at 0x400000000000, 2 MiB usable, 0 B used
+[kernel] paging self-test: map/translate/unmap OK
 [ OK ] Framebuffer initialized - 1280x720 - 3 bpp - Bgr
-[ OK ] Kernel heap initialized - 8 MiB linked-list heap in .bss
-[kernel] memory map: 11 regions, 502 MiB usable, 12 GiB reserved, 12 GiB total
-[ OK ] Memory map loaded - 11 regions - 502 MiB usable
+[ OK ] Virtual memory online - 129005 frames free
+[kernel] memory map: 11 regions, 506 MiB usable, 5 MiB reserved, 511 MiB total
+[ OK ] Memory map loaded - 11 regions - 506 MiB usable
+[mouse] PS/2 auxiliary device streaming on IRQ12
 [ OK ] Interrupts initialized - IDT loaded, PIC remapped, PIT at 100 Hz
-[ OK ] Input subsystem initialized - PS/2 keyboard on IRQ1 - 0 keys
+[ OK ] Input subsystem initialized - PS/2 keyboard IRQ1, mouse IRQ12
 [ OK ] CPU identified - AuthenticAMD - family 15 model 107
 [ OK ] Desktop environment initialized - Noor Desktop 0.1.0
 [desktop] handing over to Noor Desktop
@@ -526,10 +568,12 @@ and [`docs/evidence/uefi-boot.log`](evidence/uefi-boot.log).
 ### 6.5 What was not tested
 
 - Physical hardware. NoorOS has only been booted in QEMU; real firmware,
-  monitors and keyboards may expose assumptions.
+  monitors, keyboards and mice may expose assumptions.
 - Secure Boot, network boot, USB boot and non-OVMF UEFI implementations.
 - Long-run stability beyond the demo session.
 - Non-US keyboard layouts and non-ASCII input.
+- PS/2 mice with wheels, extra buttons or unusual packet modes; QEMU's
+  emulated three-button mouse is the only device exercised.
 - SMP, suspend/resume and hot-plug.
 - The UEFI OVMF download path in an offline environment (it falls back to BIOS
   with a warning).
@@ -551,8 +595,9 @@ machine. The integration scripts are the test suite.
 | O4 terminal commands | Met: all required commands, exact error text |
 | O5 applications | Met: Monitor, Settings, About, Launcher |
 | O6 honest reporting | Met: CPUID/RTC/framebuffer/memory are real; limits labelled |
-| O7 reproducibility | Met: `Makefile`, scripts, docs, clean releases |
-| O8 documentation | Met: this report plus setup, architecture, viva and demo docs |
+| O7 mouse | Met: cursor, taskbar launch, focus, drag, `[X]`, launcher rows |
+| O8 reproducibility | Met: `Makefile`, scripts, docs, clean releases |
+| O9 documentation | Met: this report plus setup, architecture, viva and demo docs |
 
 ### 7.2 Strengths
 
@@ -564,9 +609,11 @@ machine. The integration scripts are the test suite.
 
 ### 7.3 Weaknesses
 
-- No virtual memory or user mode; this is a single-address-space kernel.
-- The 8 MiB heap and full-frame redraws limit headroom.
-- The desktop is keyboard-only.
+- No demand paging or user mode; this is a single-address-space kernel.
+- Full-frame redraws limit headroom; only the cursor has a partial-repaint path.
+- The heap grows but never shrinks, and page-table frames are not reclaimed.
+- The mouse supports three buttons and relative motion only: no wheel, no hover
+  feedback and no cursor acceleration.
 - Rendering speed is dominated by QEMU TCG.
 - No automated assertions over pixels; evidence is reviewed visually.
 
@@ -579,28 +626,30 @@ machine. The integration scripts are the test suite.
 - Performance must be designed for the deployment target. A desktop that is fine
   natively was unusable under emulation until the wallpaper was cached and
   repainting became event-driven.
+- A pointer needs two different policies: coalesce motion, because only the
+  newest position matters, but queue button edges, because every click carries
+  an intention.
 - Honest reporting is more work than fake data, but it makes the demo credible.
 
 ---
 
 ## 8. Future work
 
-1. **Virtual memory.** A frame allocator, page tables, guard pages and a kernel
-   heap that can grow.
+1. **Demand paging.** Guard pages and lazy mapping on top of the new frame
+   allocator and page tables.
 2. **User mode.** Separate address spaces, a syscall interface and at least two
    cooperating processes.
-3. **Mouse input.** PS/2 mouse on IRQ12, a pointer, hit-testing and window drag.
-4. **Damage tracking.** Repaint only changed rectangles; add double buffering.
-5. **Storage and files.** A ramdisk or virtio-blk driver and a small read-only
+3. **Damage tracking.** Repaint only changed rectangles; add double buffering.
+4. **Storage and files.** A ramdisk or virtio-blk driver and a small read-only
    filesystem, then a text editor.
-6. **SMP.** APIC, per-CPU data and a scheduler.
-7. **Better firmware support.** A boot menu, UEFI runtime services and physical
+5. **SMP.** APIC, per-CPU data and a scheduler.
+6. **Better firmware support.** A boot menu, UEFI runtime services and physical
    hardware testing.
 
-[`docs/roadmap.md`](roadmap.md) turns this list into ten gated milestones (mouse,
-USB boot media, real-hardware hardening, USB HID, virtual memory, user mode,
-storage, installer, everyday desktop, networking) with acceptance tests, effort
-estimates and a risk register.
+[`docs/roadmap.md`](roadmap.md) turns this list into ten gated milestones (USB
+boot media, real-hardware hardening, USB HID, demand paging, user mode, storage,
+installer, everyday desktop, networking) with acceptance tests, effort estimates
+and a risk register.
 
 ---
 

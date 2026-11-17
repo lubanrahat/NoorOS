@@ -3,7 +3,8 @@
 //! Order matters:
 //!   1. serial first, so every later failure is visible on the host,
 //!   2. framebuffer next, so failures can also be shown to the user,
-//!   3. heap, then the memory-map snapshot (the snapshot allocates),
+//!   3. frame allocator, active page tables and heap, then the memory-map
+//!      snapshot (the snapshot allocates),
 //!   4. keyboard/mouse devices, PIT and finally the IDT/PIC (interrupts on),
 //!   5. desktop.
 
@@ -51,10 +52,14 @@ pub fn start(boot_info: &'static mut BootInfo) -> ! {
     );
 
     // --- Memory ------------------------------------------------------------
-    // The heap must exist before anything allocates: the boot screen itself is
-    // built from `String`s, so every earlier step has to be allocation-free.
-    memory::init_heap();
-    let heap = memory::heap_stats();
+    // The frame allocator and page tables must exist before anything allocates:
+    // the boot screen itself is built from `String`s, so every earlier step has
+    // to be allocation-free.
+    if let Err(error) = memory::init(boot_info) {
+        serial_println!("[fatal] memory initialisation failed: {error}");
+        crate::kernel::panic::halt();
+    }
+    let frames = memory::frame_stats();
     serial_println!(
         "[boot] framebuffer size: {}",
         util::bytes(framebuffer_info.byte_len as u64)
@@ -78,8 +83,8 @@ pub fn start(boot_info: &'static mut BootInfo) -> ! {
         ),
     );
     boot.ok(
-        "Kernel heap initialized",
-        &alloc::format!("{} linked-list heap in .bss", util::bytes(heap.size)),
+        "Virtual memory online",
+        &alloc::format!("{} frames free", frames.free),
     );
 
     let map = memory::init_map(&boot_info.memory_regions);
@@ -128,7 +133,8 @@ pub fn start(boot_info: &'static mut BootInfo) -> ! {
     boot.ok("Desktop environment initialized", "Noor Desktop 0.1.0");
     boot.starting_desktop();
     // Release the boot screen's off-screen background before the desktop
-    // allocates its own wallpaper cache (the kernel heap is only 8 MiB).
+    // allocates its own wallpaper cache. The heap would grow on demand anyway,
+    // but freeing first avoids mapping pages that are no longer needed.
     drop(boot);
     serial_println!("[desktop] handing over to Noor Desktop");
 

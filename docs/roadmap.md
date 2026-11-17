@@ -56,7 +56,7 @@ explicit anti-goals in [section 8](#8-anti-goals-scope-discipline).
 | Display | Linear framebuffer, 24/32 bpp, software rendering | QEMU supplies 1280x720 |
 | Interrupts | IDT, 8259 PIC remapped, IRQ0 (PIT 100 Hz), IRQ1 (keyboard), IRQ12 (mouse) | No APIC, no SMP |
 | Input | PS/2 keyboard and PS/2 mouse with a graphical pointer | No USB HID, no wheel |
-| Memory | Bootloader map report + fixed 8 MiB `.bss` heap | **No paging, no frame allocator** |
+| Memory | Bitmap frame allocator, active page tables, demand-grown heap | M5 core landed; no demand paging or guard pages |
 | Concurrency | One address space, one thread of control | No processes, no scheduler |
 | Storage | None | No disk, no filesystem |
 | Desktop | Immediate-mode windows, taskbar, launcher, mouse hit-testing | Full-frame redraw; cursor-only fast path |
@@ -267,6 +267,10 @@ hardware, and it can ship as a patch release.
 
 ### M5: Virtual memory (v0.4 Protected)
 
+**Status in 0.1.0:** the frame allocator, active 4-level page tables and the
+demand-grown heap have landed. Demand paging, guard pages and a double-fault IST
+remain.
+
 **Goal:** the kernel owns real page tables, the heap can grow, and a bad access
 faults instead of corrupting memory silently.
 
@@ -274,13 +278,15 @@ faults instead of corrupting memory silently.
 
 1. **Frame allocator** - bitmap or buddy over `Usable` regions of the
    bootloader map (a `Vec` of free frames, or a bitmap sized to physical RAM).
+   *Done: bitmap sized to the highest usable frame.*
 2. **Page tables** - 4-level walker: map/unmap/protect, physical-to-virtual
    helpers, `OffsetPageTable` over the bootloader's physical memory offset.
+   *Done: `map_page`, `unmap_page`, `translate_addr`, boot self-test.*
 3. **Kernel address space** - map the framebuffer write-combining, map the heap,
    guard pages around kernel stacks, and a guard page under each thread stack.
 4. **Growable heap** - replace the fixed 8 MiB array with a heap that reserves
    frames on demand, keeping `linked_list_allocator` (or moving to a slab
-   allocator for small kernel objects).
+   allocator for small kernel objects). *Done for the kernel heap.*
 5. **Double fault IST** - a known-good stack for the double fault handler.
 
 **Acceptance**
@@ -505,10 +511,10 @@ These are cheap now and expensive later.
 | xHCI/USB HID takes far longer than planned | months lost | ship PS/2-only v1.0; USB as a patch release |
 | ACPI/AML parsing is fiddly | shutdown fails on some machines | try-each-`SLP_TYP` fallback; keep QEMU path |
 | No test hardware available | "works on my VM" only | budget one spare x86 PC; document the matrix honestly |
-| Virtual memory + user mode proves harder than expected | M5/M6 slip | land paging first, keep kernel-only until it is stable; user mode is a separate gate |
+| Demand paging + user mode proves harder than expected | M5/M6 slip | paging core is landed; keep kernel-only until guard pages are stable; user mode is a separate gate |
 | Scope creep ("add networking, add a browser") | nothing ships | the anti-goals list below is a contract |
 | Firmware variance (Secure Boot, GOP modes, legacy USB) | black screen on real hardware | documented requirements, serial logging, framebuffer fallback |
-| Writes without paging corrupt memory | mysterious crashes | debug assertions, guard pages at M5, `try_lock` fault path |
+| Writes without guard pages corrupt memory | mysterious crashes | debug assertions, guard pages at M5, `try_lock` fault path |
 | QEMU TCG performance | unusable desktop | damage rectangles (M1), back buffer (M9) |
 | No unit tests for hardware logic | silent regressions | factor parsers into host-testable code (section 4.3) |
 

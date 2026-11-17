@@ -161,13 +161,16 @@ fn fetch_ovmf(dir: &std::path::Path) -> Result<(std::path::PathBuf, std::path::P
     std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
 
     // The prebuilt released by the rust-osdev project. Pinned for repeatability.
-    let url = "https://github.com/rust-osdev/ovmf-prebuilt/releases/download/edk2-stable202411-1/ovmf-prebuilt-202411-x64.tar.xz";
+    let tag = "edk2-stable202411-r1";
+    let url = format!(
+        "https://github.com/rust-osdev/ovmf-prebuilt/releases/download/{tag}/{tag}-bin.tar.xz"
+    );
     eprintln!("NoorOS: downloading OVMF firmware (first UEFI boot only)...");
     let archive = dir.join("ovmf.tar.xz");
     let status = Command::new("curl")
         .args(["-sSfL", "-o"])
         .arg(&archive)
-        .arg(url)
+        .arg(&url)
         .status()
         .map_err(|e| format!("curl failed: {e}"))?;
     if !status.success() {
@@ -184,6 +187,16 @@ fn fetch_ovmf(dir: &std::path::Path) -> Result<(std::path::PathBuf, std::path::P
         return Err("could not extract OVMF firmware".into());
     }
     let _ = std::fs::remove_file(&archive);
+
+    // The archive contains <tag>-bin/<arch>/{code,vars}.fd; QEMU wants the
+    // x64 pair under stable names in the cache directory.
+    let extracted = dir.join(format!("{tag}-bin"));
+    let x64 = extracted.join("x64");
+    for (src, dst) in [("code.fd", &code), ("vars.fd", &vars)] {
+        std::fs::rename(x64.join(src), dst)
+            .map_err(|e| format!("cannot install OVMF {src}: {e}"))?;
+    }
+    let _ = std::fs::remove_dir_all(&extracted);
 
     if code.exists() && vars.exists() {
         Ok((code, vars))

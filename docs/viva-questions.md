@@ -1,4 +1,4 @@
-# NoorOS - 20 viva questions and answers
+# NoorOS - 22 viva questions and answers
 
 Answers are written to be spoken aloud. Each one names the file or mechanism
 that can be shown in the code.
@@ -21,11 +21,13 @@ It is a *small* OS: single address space, no processes. But the boundary between
 Firmware (SeaBIOS or OVMF) loads the disk image. The `bootloader` 0.11 first
 stage loads the kernel ELF, enables long mode, builds page tables, sets up a
 128 KiB stack and passes `BootInfo`. `kernel_main` disables interrupts, then
-`kernel/init.rs` initialises serial, framebuffer, the 8 MiB heap, the memory-map
-snapshot, the keyboard parser, the PIT at 100 Hz, and finally the IDT and PIC,
-at which point interrupts are enabled. The boot screen prints one `[ OK ]` line
-after each step. Then the desktop is created, its wallpaper cached, and the boot
-screen background is dropped before `desktop::run` enters the event loop.
+`kernel/init.rs` initialises serial, framebuffer, the bitmap frame allocator and
+active page tables, the initial heap pages, the memory-map snapshot, the keyboard
+parser, the PS/2 mouse, the PIT at 100 Hz, and finally the
+IDT and PIC, at which point interrupts are enabled. The boot screen prints one
+`[ OK ]` line after each step. Then the desktop is created, its wallpaper cached,
+and the boot screen background is dropped before `desktop::run` enters the event
+loop.
 
 ### 3. Why use the `bootloader` crate instead of writing your own bootloader?
 
@@ -54,44 +56,49 @@ There is no timer that reveals pre-written messages. The framebuffer line is
 generated from `FrameBufferInfo`; the memory line from the classified map; the
 CPU line from CPUID.
 
-### 6. Why must the heap exist before the boot screen is created?
+### 6. Why must memory be initialised before the boot screen is created?
 
-The boot screen stores `String` labels and details, and `serial_println!`
-allocates while formatting. The global allocator is `linked_list_allocator`
-backed by a static buffer, so it must be initialised before the first allocation
-or the kernel panics or deadlocks. `memory::init_heap()` is therefore called
-before `BootScreen::new` and before any `format!`. This ordering was learned from
-a real deadlock during development.
+The boot screen stores `String` labels and details, and `alloc::format!`
+allocates. The global allocator is backed by a heap whose first pages are mapped
+by our own paging code, so the frame allocator, the active page tables and the
+initial heap pages must exist before the first allocation or the kernel panics.
+`memory::init()` therefore runs before `BootScreen::new` and before any
+`format!`. This ordering was learned from a real deadlock during development.
 
-### 7. Explain the heap implementation. Why put it in `.bss`?
+### 7. Explain the heap implementation. Why is it no longer in `.bss`?
 
-An 8 MiB array is declared with `#[repr(align(4096))]` and wrapped in
-`UnsafeCell`, with a `Sync` implementation justified by the fact that it is only
-reachable through the global allocator's spin lock. `LockedHeap::empty()` is
-registered as `#[global_allocator]` and initialised with that memory. `.bss` is
-part of the kernel image and is mapped by the bootloader, so no page allocator is
-needed. The cost is a fixed ceiling; the kernel reports total, used and free
-bytes honestly.
+The heap is a contiguous virtual range at `0x0000_4000_0000_0000`, not a static
+array. At boot only 2 MiB are mapped. A `linked_list_allocator::Heap` behind a
+spin mutex provides first-fit allocation with coalescing. When an allocation
+fails, the allocator releases the heap lock, maps enough fresh 4 KiB frames
+directly after the existing heap, calls `Heap::extend`, and retries. A partial
+mapping is rolled back. The boot screen and wallpaper grow the heap from 2 MiB to
+about 4.6 MiB, which the `memory` command displays as mapped and in-use bytes.
+The cost is that growth is explicit: this is not demand paging.
 
-### 8. Why is there no virtual memory, and what are the consequences?
+### 8. How does virtual memory work in NoorOS, and what is still missing?
 
-Implementing page tables, a frame allocator, address spaces and a mapping API is
-a substantial subsystem. For 0.1.0 the bootloader's identity mappings are used
-for the kernel's lifetime. Consequences: every pointer is physical, there is no
-memory protection, a wild write corrupts the kernel, the heap cannot grow, and
-there is no user/kernel separation. The `memory` command and Noor Settings state
-`not implemented (no paging)` rather than hiding it. The kernel still handles
-page faults so a fault is reported, not silent.
+Three layers. `memory::frame_allocator` builds a bitmap from the bootloader's
+memory map and owns 4 KiB physical frames. `memory::paging` reads CR3 and edits
+the active PML4 through the bootloader's physical-memory offset, using the
+`x86_64` crate's `OffsetPageTable`/`Mapper` traits; it provides `map_page`,
+`unmap_page` and `translate_addr`, allocates intermediate tables on demand and
+flushes the TLB. The heap uses those mappings to grow. A boot-time self-test maps,
+translates and unmaps a scratch page, and the `memory` command shows live heap and
+kernel translations. Still missing: demand paging, guard pages, swapping and
+user-mode address spaces; a wild kernel write still corrupts the kernel.
 
 ### 9. How do interrupts work here?
 
-`interrupts::init` builds an IDT with handlers for CPU exceptions and for IRQ0
-and IRQ1, then remaps the 8259 PIC from vectors 8-15 to 32-47 so hardware IRQs
-no longer collide with exceptions. The PIT is programmed to 100 Hz; each IRQ0
-increments a monotonic tick counter and the interrupt counter. IRQ1 feeds the
-keyboard queue. Each handler sends EOI. Interrupts are disabled at kernel entry
-because firmware may leave the PIC unmapped, where IRQ0 would arrive as vector 8
-and be interpreted as a double fault.
+`interrupts::init` builds an IDT with handlers for CPU exceptions and for IRQ0,
+IRQ1 and IRQ12, then remaps the 8259 PIC from vectors 8-15 to 32-47 so hardware
+IRQs no longer collide with exceptions. The PIT is programmed to 100 Hz; each
+IRQ0 increments a monotonic tick counter and the interrupt counter. IRQ1 feeds
+the keyboard queue. IRQ12 is the slave PIC's line 4, mapped to vector `0x2C`, so
+the master unmasks IRQ2 for the cascade and the slave unmasks only IRQ12 (masks
+`0xF8` and `0xEF`). Each handler sends EOI. Interrupts are disabled at kernel
+entry because firmware may leave the PIC unmapped, where IRQ0 would arrive as
+vector 8 and be interpreted as a double fault.
 
 ### 10. Trace a key press from the keyboard to the terminal.
 
@@ -128,7 +135,7 @@ and copies 3 or 4 bytes. Alpha blending reads the existing pixel and mixes:
 `(fg * a + bg * (255 - a)) / 255`. Higher layers only call primitives. The 3-byte
 BGR path is optimised with `as_chunks_mut::<3>()` in `fast_hline`.
 
-### 14. How does the window manager decide what is on top and who has focus?
+### 14. How does the window manager decide what is on top, who has focus, and what a click hits?
 
 Windows live in a `Vec<Window>` in open order. Rendering iterates from index 0
 upward, so later windows are drawn over earlier ones. Opening an existing
@@ -138,25 +145,63 @@ remaining one. Focus changes the title-bar colour, the close-button colour and
 adds an accent strip to the content. The launcher is modal and consumes keys
 while open.
 
+Hit-testing walks the same order backwards, because the last thing painted is the
+first thing visible: taskbar, then the modal launcher if it is open, then windows
+from top to bottom. The rectangles come from the same helpers used for drawing
+(`Window::title_rect`, `Window::close_rect`, `bar_rect`, `panel_rect`), so a click
+cannot disagree with the picture.
+
 ### 15. Why is the desktop event-driven instead of running at 60 Hz?
 
 A full frame under QEMU TCG costs roughly 250 ms with one window and about 1.2 s
 with the launcher. Repainting on a timer would leave the screen permanently
 half-drawn and waste emulated CPU. The loop blocks in `hlt`, repaints only when a
-key event or a minute-boundary clock update occurs, and therefore looks static
-between events. The terminal cursor blinks only while focused, during repaints.
-The tradeoff is no animations, but the UI is usable under emulation.
+key event, a mouse event or a minute-boundary clock update occurs, and therefore
+looks static between events. The terminal cursor blinks only while focused,
+during repaints. The tradeoff is no animations, but the UI is usable under
+emulation.
 
-### 16. What did you do to make rendering fast enough?
+### 16. How does the mouse pointer move without repainting the whole screen?
 
-Six things: cache the boot background and desktop wallpaper and blit them; draw
+Two paths share one `Cursor`. `Cursor::erase` copies back the pixels that were
+saved underneath the arrow; `Cursor::render` saves the new area, draws a soft
+shadow, then the outlined arrow. A move only calls `render_cursor`, which erases
+the old position and draws at the new one, touching a 13x21 rectangle twice
+instead of a 1280x720 frame. Keyboard events still request `Repaint::Full`.
+Because the saved pixels are restored exactly, moving away and back produces a
+byte-identical frame - there are no trails.
+
+### 17. What did you do to make rendering fast enough?
+
+Seven things: cache the boot background and desktop wallpaper and blit them; draw
 text as coalesced horizontal runs instead of per-pixel rectangles; add a
 3-byte-per-pixel `fast_hline`; block-sample radial glows at 6x6 instead of
-per-pixel; repaint only on events; and use an opaque scrim for the launcher
-instead of full-screen per-pixel alpha. Screenshots wait 2.5 s after each action
-because even optimised frames are slow under TCG.
+per-pixel; repaint only on events; use an opaque scrim for the launcher instead of
+full-screen per-pixel alpha; and give the pointer a save-under cursor-only
+repaint. Screenshots wait 2.5 s after each action because even optimised frames
+are slow under TCG.
 
-### 17. How do shutdown and reboot work, and why is `isa-debug-exit` involved?
+### 18. Trace a mouse movement and a click from the wire to the desktop.
+
+The 8042 controller's auxiliary port raises IRQ12. The handler reads status port
+`0x64`, checks the aux bit and that data is ready, then reads port `0x60` and
+feeds the byte to a three-byte packet state machine: flags (buttons plus X/Y
+sign), then X delta, then Y delta. Completed motion updates an atomic pointer
+position clamped to the framebuffer, and a button edge is pushed into a small
+queue. The IRQ itself never draws and never allocates: it holds a short spin lock
+that readers take inside `without_interrupts`, so the main loop cannot deadlock
+against its own interrupt.
+
+The desktop loop is woken from `hlt`, takes the newest pointer position once
+(motion is coalesced because only the final position matters), and drains queued
+button edges (edges are queued because every click matters). It clamps to the
+screen, hit-tests, and requests `Repaint::Cursor` for movement or `Repaint::Full`
+when something changed. A press on a title bar starts a drag that stores the
+grab offset, so the window follows the pointer without jumping; release ends it.
+A release over `[X]` closes the window, and a click anywhere in a window raises
+and focuses it.
+
+### 19. How do shutdown and reboot work, and why is `isa-debug-exit` involved?
 
 Shutdown writes the ACPI sleep type plus enable bit to `PM1a_CNT` at port
 `0x604`, tries the legacy `0xB004` port, then writes to QEMU's
@@ -166,17 +211,22 @@ Reboot pulses the 8042 reset line with `0xFE` and falls back to a triple fault.
 The launcher passes `-no-reboot`, so a demo reboot exits QEMU; the test harness
 omits it to observe a real reset and returns to a fresh desktop.
 
-### 18. How was the system tested, and what was not tested?
+### 20. How was the system tested, and what was not tested?
 
 Every feature was exercised on the running image: QEMU boots the release image,
-`scripts/interact.py` sends real key events through the monitor's `sendkey`,
-captures each screen with `screendump`, and the serial log is checked for the
-boot steps. BIOS and UEFI boots both reach the desktop; `shutdown` exits QEMU
-with status 0; `reboot` returns to a desktop with uptime 1 s; `cargo clippy
---release` is clean. Not tested: physical hardware, Secure Boot, non-OVMF UEFI,
-USB input, non-US layouts, SMP, long-run stability and offline OVMF download.
+`scripts/interact.py` sends real key events through the monitor's `sendkey` and
+real pointer events through `mouse_move`/`mouse_button`, captures each screen
+with `screendump`, and the serial log is checked for the boot steps. The mouse
+run moves the pointer 1:1, leaves and returns to prove frames are identical (no
+trails), launches Terminal from the taskbar, drags a window by its title bar,
+closes it with `[X]`, raises a covered window and picks a launcher row - seventeen
+screenshots in total. BIOS and UEFI boots both reach the desktop; `shutdown` exits
+QEMU with status 0; `reboot` returns to a desktop with uptime 1 s;
+`cargo clippy --release` is clean. Not tested: physical hardware, Secure Boot,
+non-OVMF UEFI, USB input, mice with wheels or extra buttons, non-US layouts, SMP,
+long-run stability and offline OVMF download.
 
-### 19. What was the hardest bug, and what did it teach you?
+### 21. What was the hardest bug, and what did it teach you?
 
 Two stand out. First, a heap deadlock: `serial_println!` was called while the
 allocator's `free()` lock was held, so formatting re-entered the allocator. The
@@ -188,14 +238,14 @@ look like a rendering bug. The build script now registers every file, and the
 capture scripts choose the newest image. Both taught that ordering and build
 correctness are part of the design, not incidental details.
 
-### 20. If you had another month, what would you build next?
+### 22. If you had another month, what would you build next?
 
-In order: a frame allocator and real virtual memory; user mode with a syscall
-boundary and two processes; a PS/2 mouse and pointer hit-testing; damage
-rectangles with double buffering so repaints are partial; a ramdisk filesystem
-and a text editor; then SMP with an APIC and a scheduler. Each is a project in
-itself, which is exactly why 0.1.0 stops at a coherent single-address-space
-desktop and documents the boundary.
+In order: demand paging and guard pages; user mode with a syscall boundary and
+two processes; damage rectangles with double buffering so repaints are partial
+and the cursor path covers the rest; a ramdisk filesystem and a text editor; then
+SMP with an APIC and a scheduler. Each is a project in itself, which is exactly
+why 0.1.0 stops at a coherent single-address-space desktop with keyboard and
+mouse input, and documents the boundary.
 
 ---
 
@@ -204,10 +254,13 @@ desktop and documents the boundary.
 - Entry: `kernel/src/main.rs` → `kernel/init.rs`
 - Boot screen: `kernel/src/boot/mod.rs`
 - IDT/PIC/PIT: `kernel/src/interrupts/mod.rs`, `drivers/timer.rs`
-- Heap and map: `kernel/src/memory/mod.rs`
+- Keyboard and mouse: `kernel/src/drivers/keyboard.rs`, `drivers/mouse.rs`
+- Cursor: `kernel/src/desktop/cursor.rs`
+- Frame allocator, paging, heap: `kernel/src/memory/{frame_allocator,paging,heap}.rs`
 - Canvas: `kernel/src/graphics/canvas.rs`
 - Windows: `kernel/src/desktop/desktop.rs`, `window.rs`
 - Terminal/shell: `applications/terminal.rs`, `shell/commands.rs`
 - Power: `drivers/power.rs`
 - Evidence: `screenshots/demo/`, `scripts/interact.py`
-- Real mode: 1280x720, 3 bpp, Bgr; 11 regions, 502 MiB usable; 100 Hz PIT
+- Real mode: 1280x720, 3 bpp, Bgr; 11 regions, 506 MiB usable; 100 Hz PIT
+- IRQ vectors: PIT 0x20, keyboard 0x21, mouse 0x2C; PIC masks `0xF8` / `0xEF`

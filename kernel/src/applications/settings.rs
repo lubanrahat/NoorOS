@@ -238,10 +238,15 @@ fn system(canvas: &mut Canvas, area: Rect) {
     ui::heading(canvas, area.x, area.y, "System");
     let mut y = area.y + 46;
     let heap = memory::heap_stats();
+    let frames = memory::frame_stats();
     let mut rows = alloc::vec![
-        ("Kernel heap", format!("{} total", util::bytes(heap.size))),
+        (
+            "Kernel heap",
+            format!("{} mapped", util::bytes(heap.mapped))
+        ),
         ("Heap in use", util::bytes(heap.used).to_string()),
         ("Heap free", util::bytes(heap.free).to_string()),
+        ("Frames free", format!("{}", frames.free)),
         ("Uptime", util::uptime(timer::uptime_ms())),
         ("PIT frequency", format!("{} Hz", timer::TICK_HZ)),
     ];
@@ -262,8 +267,9 @@ fn system(canvas: &mut Canvas, area: Rect) {
         area.x,
         y + 10,
         area.w,
-        "Virtual memory is not implemented: the kernel runs on the mappings created by the \
-         bootloader and uses a static heap for dynamic allocation.",
+        "Virtual memory is active: a bitmap frame allocator owns physical memory, the active \
+         PML4 is edited through the bootloader's physical-memory mapping, and the kernel heap is \
+         mapped on demand.",
         1,
         TEXT_DIM,
         3,

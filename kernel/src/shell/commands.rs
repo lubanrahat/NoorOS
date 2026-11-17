@@ -12,6 +12,7 @@ use alloc::vec::Vec;
 use crate::drivers::{cpu, framebuffer, keyboard, mouse, rtc, timer};
 use crate::memory;
 use crate::util;
+use x86_64::VirtAddr;
 
 use super::parser::parse;
 
@@ -142,7 +143,7 @@ fn version() -> Output {
         String::from("Target: x86_64-unknown-none"),
         String::from("Language: Rust (no_std, no_main)"),
         format!(
-            "Heap: {} linked-list allocator in .bss",
+            "Heap: {} mapped on demand",
             util::bytes(memory::heap_capacity())
         ),
     ])
@@ -212,9 +213,13 @@ fn info() -> Output {
             now.clock_hm()
         ));
     }
-    // Honest limitation: the kernel has no paging of its own.
+    let frames = memory::frame_stats();
     lines.push(format!(
-        "  {:<15} not implemented (no paging)",
+        "  {:<15} {} free / {} managed frames",
+        "Physical frames", frames.free, frames.usable
+    ));
+    lines.push(format!(
+        "  {:<15} active (bitmap frames + page tables)",
         "Virtual memory"
     ));
     lines.push(format!(
@@ -228,43 +233,84 @@ fn info() -> Output {
 }
 
 fn memory_info() -> Output {
-    let mut lines = Vec::new();
     let Some(map) = memory::map() else {
         return Output::message("Memory map is not available.");
     };
-    // Keep this within the terminal's 18-row viewport: heading, table header,
-    // one row per region and two footer lines. The full picture is in Monitor.
-    lines.push(format!(
-        "PHYSICAL MEMORY  -  {} total, {} usable",
-        util::bytes(map.total_bytes),
-        util::bytes(map.usable_bytes)
-    ));
-    lines.push(String::new());
-    lines.push(format!(
-        "  {:<12} {:<12} {:>7}  TYPE",
-        "START", "END", "SIZE"
-    ));
-    for region in map.regions.iter().take(12) {
-        lines.push(format!(
-            "  {:012X} {:012X} {:>7}  {}",
-            region.start,
-            region.start + region.len,
-            util::bytes(region.len),
-            region.kind.detail()
-        ));
-    }
-    if map.regions.len() > 12 {
-        lines.push(format!("  ... {} more region(s)", map.regions.len() - 12));
-    }
-    lines.push(String::new());
+    let frames = memory::frame_stats();
     let heap = memory::heap_stats();
+
+    // Keep this within the terminal's 18-row viewport. The full region table
+    // lives in the Monitor application; this view answers the memory questions
+    // that matter interactively: how much RAM, how many frames, and whether a
+    // virtual address really translates through the active page tables.
+    let mut lines = Vec::new();
+    lines.push(String::from("PHYSICAL MEMORY"));
     lines.push(format!(
-        "  Heap {} total, {} used - linked_list_allocator",
-        util::bytes(heap.size),
-        util::bytes(heap.used)
+        "  Total RAM  {} ({} regions)",
+        util::bytes(map.total_bytes),
+        map.regions.len()
     ));
-    lines.push(String::from("  Paging: not implemented in this version."));
+    lines.push(format!("  Usable     {}", util::bytes(map.usable_bytes)));
+    lines.push(format!("  Reserved   {}", util::bytes(map.reserved_bytes)));
+    lines.push(String::new());
+    lines.push(String::from("FRAME ALLOCATOR (4 KiB frames)"));
+    lines.push(format!(
+        "  Managed    {} frames ({})",
+        frames.usable,
+        util::bytes(frames.usable * memory::FRAME_SIZE)
+    ));
+    lines.push(format!(
+        "  Used       {} frames ({})",
+        frames.used,
+        util::bytes(frames.used * memory::FRAME_SIZE)
+    ));
+    lines.push(format!(
+        "  Free       {} frames ({})",
+        frames.free,
+        util::bytes(frames.free * memory::FRAME_SIZE)
+    ));
+    lines.push(String::new());
+    lines.push(String::from("KERNEL HEAP (mapped on demand)"));
+    lines.push(format!(
+        "  Mapped     {} at {:#018X}",
+        util::bytes(heap.mapped),
+        heap.base
+    ));
+    lines.push(format!(
+        "  In use     {} of {} usable",
+        util::bytes(heap.used),
+        util::bytes(heap.size)
+    ));
+    lines.push(String::from("ADDRESS TRANSLATION"));
+    lines.push(translation_line("heap", memory::heap_base()));
+    lines.push(translation_line(
+        "kernel",
+        VirtAddr::new(VERSION.as_ptr() as u64),
+    ));
+    let probe = VirtAddr::new(0x0000_2000_0000_0000);
+    let probe_result = match memory::translate_addr(probe) {
+        Some(physical) => format!("{:#018X} (mapped)", physical.as_u64()),
+        None => String::from("None (unmapped)"),
+    };
+    lines.push(format!(
+        "  {:<6} {:#018X} -> {}",
+        "probe",
+        probe.as_u64(),
+        probe_result
+    ));
     Output::text(lines)
+}
+
+fn translation_line(label: &str, address: VirtAddr) -> String {
+    match memory::translate_addr(address) {
+        Some(physical) => format!(
+            "  {:<6} {:#018X} -> {:#018X}",
+            label,
+            address.as_u64(),
+            physical.as_u64()
+        ),
+        None => format!("  {:<6} {:#018X} -> None", label, address.as_u64()),
+    }
 }
 
 fn uptime() -> Output {

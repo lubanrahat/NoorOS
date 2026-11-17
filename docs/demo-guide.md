@@ -93,10 +93,12 @@ nonsense
 For each, briefly say what is real:
 
 - `help` lists the ten commands.
-- `info` is live: CPUID brand, framebuffer mode, memory totals, heap usage,
-  uptime, RTC clock. Point out `Virtual memory  not implemented (no paging)`.
-- `memory` shows the classified bootloader map: 11 regions, 502 MiB usable, the
-  12 GiB reserved MMIO range, heap total/used, and the paging limitation.
+- `info` is live: CPUID brand, framebuffer mode, memory totals, frame usage,
+  heap usage, uptime, RTC clock. Point out `Virtual memory  active (bitmap
+  frames + page tables)`.
+- `memory` shows physical RAM, the bitmap frame allocator, the demand-grown heap
+  and live virtual-to-physical translations for the heap, a kernel symbol and an
+  unmapped probe.
 - `version` shows the target triple and allocator.
 - `uptime` shows PIT ticks and timer interrupts.
 - `nonsense` produces the required red message:
@@ -218,7 +220,7 @@ implemented and verified during testing, and show the captured evidence.
   Electron, Linux or userspace process. The host binary only launches QEMU.
 - **Init ordering.** Heap before allocation; interrupts disabled until the IDT
   and PIC are ready.
-- **Honesty.** Missing paging and acceleration are labelled in the UI and
+- **Honesty.** Missing demand paging and acceleration are labelled in the UI and
   documented, not faked.
 - **Hardware facts.** CPUID, CMOS RTC, PIT, PS/2 devices, framebuffer info and
   the bootloader memory map are all read at runtime.
@@ -238,7 +240,7 @@ Use `docs/viva-questions.md` for full answers. The most likely ones:
 
 1. Why `no_std`/`no_main`?
 2. Why the `bootloader` crate?
-3. Where is virtual memory, and why not?
+3. How does virtual memory work, and what is still missing?
 4. How does a key press reach the terminal?
 5. Why does the desktop not animate?
 6. How do you know the boot screen is not fake?
@@ -267,7 +269,7 @@ Use `docs/viva-questions.md` for full answers. The most likely ones:
 | `02-terminal.png` | Terminal identity |
 | `03-help.png` | Command set |
 | `04-info.png` | Live system facts |
-| `05-memory.png` | Memory map and honesty |
+| `05-memory.png` | Physical RAM, frames, heap and live translation |
 | `06-version-uptime.png` | Version and clock |
 | `07-unknown.png` | Required error message |
 | `08-monitor.png` | Monitor dashboard |

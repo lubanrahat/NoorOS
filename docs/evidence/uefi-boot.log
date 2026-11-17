@@ -1,51 +1,164 @@
-INFO : Framebuffer info: FrameBufferInfo { byte_len: 2764800, width: 1280, height: 720, pixel_format: Bgr, bytes_per_pixel: 3, stride: 1280 }
-INFO : 4th Stage
-INFO : BiosInfo { stage_4: Region { start: 130000, len: 24980 }, kernel: Region { start: 1000000, len: 8af18 }, ramdisk: Region { start: 108b000, len: 0 }, config_file: Region { start: 108b000, len: d2 }, last_used_addr: 108b0d1, framebuffer: BiosFramebufferInfo { region: Region { start: fd000000, len: 2a3000 }, width: 500, height: 2d0, bytes_per_pixel: 3, stride: 500, pixel_format: Bgr }, memory_map_addr: 12244, memory_map_len: 7 }
-INFO : BIOS boot
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1,0x1)/Ata(Primary,Master,0x0)
+BdsDxe: starting Boot0001 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1,0x1)/Ata(Primary,Master,0x0)
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 16384000, width: 2560, height: 1600, pixel_format: Bgr, bytes_per_pixel: 4, stride: 2560 }
+INFO : UEFI bootloader started
+INFO : Using framebuffer at 0x80000000
+INFO : Reading configuration from disk was successful
+INFO : Trying to load ramdisk via Disk
+INFO : Ramdisk not found.
+TRACE: exiting boot services
+TRACE: switching to new level 4 table
+INFO : New page table at: PhysFrame[4KiB](0x101000)
 INFO : Elf file loaded at Pointer {
-    addr: 0x0000000001000000,
-    metadata: 569112,
+    addr: 0x000000001e6b7000,
+    metadata: 683176,
 }
 INFO : virtual_address_offset: 0x10000000000
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: a654, mem_size: a654, align: 1000 })
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: a660, virtual_addr: b660, physical_addr: b660, file_size: 4063f, mem_size: 4063f, align: 1000 })
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 4aca0, virtual_addr: 4cca0, physical_addr: 4cca0, file_size: 3018, mem_size: 3360, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: bab4, mem_size: bab4, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: bac0, virtual_addr: cac0, physical_addr: cac0, file_size: 4b31f, mem_size: 4b31f, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 56de0, virtual_addr: 58de0, physical_addr: 58de0, file_size: 37f0, mem_size: 4220, align: 1000 })
 INFO : Mapping bss section
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 4dcb8, virtual_addr: 50cb8, physical_addr: 50cb8, file_size: 3ec, mem_size: 803390, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 5a5d0, virtual_addr: 5d5d0, physical_addr: 5d5d0, file_size: 66c, mem_size: 1768, align: 1000 })
 INFO : Mapping bss section
-INFO : Entry point at: 0x1000003fef0
-INFO : Creating GDT at PhysAddr(0x18c2000)
+INFO : Entry point at: 0x10000044410
+INFO : Creating GDT at PhysAddr(0x132000)
 INFO : Map framebuffer
+INFO : Map physical memory
 INFO : Allocate bootinfo
 INFO : Create Memory Map
 INFO : Create bootinfo
-INFO : Jumping to kernel entry point at VirtAddr(0x1000003fef0)
+INFO : Jumping to kernel entry point at VirtAddr(0x10000044410)
 
 ==============================================
  NoorOS 0.1.0 - Noor Kernel
  A Light Beyond Computing.
 ==============================================
-[boot] entered kernel; bootloader_api 0.11.17, kernel ELF at 0x1000000 (569112 bytes)
-[boot] framebuffer 1280x720, stride 1280, 3 bpp, Bgr
-[kernel] heap: 8 MiB at 0x10000054000, 8 MiB free
-[boot] framebuffer size: 2 MiB
-[ OK ] Framebuffer initialized - 1280x720 - 3 bpp - Bgr
-[ OK ] Kernel heap initialized - 8 MiB linked-list heap in .bss
-[kernel] memory map: 11 regions, 502 MiB usable, 12 GiB reserved, 12 GiB total
-  Usable           0x000000000000 - 0x00000009FC00  639 KiB
-  Reserved (type 2) 0x00000009FC00 - 0x0000000A0000  1 KiB
-  Reserved (type 2) 0x0000000F0000 - 0x000000100000  64 KiB
-  Usable           0x000000100000 - 0x000001000000  15 MiB
-  Bootloader       0x000001000000 - 0x00000108B000  556 KiB
-  Usable           0x00000108B000 - 0x00000108C000  4 KiB
-  Bootloader       0x00000108C000 - 0x0000018CF000  8 MiB
-  Usable           0x0000018CF000 - 0x00001FFE0000  487 MiB
-  Reserved (type 2) 0x00001FFE0000 - 0x000020000000  128 KiB
-  Reserved (type 2) 0x0000FFFC0000 - 0x000100000000  256 KiB
-  Reserved (type 2) 0x00FD00000000 - 0x010000000000  12 GiB
-[ OK ] Memory map loaded - 11 regions - 502 MiB usable
+[boot] entered kernel; bootloader_api 0.11.17, kernel ELF at 0x1E6B7000 (683176 bytes)
+[boot] framebuffer 2560x1600, stride 2560, 4 bpp, Bgr
+[kernel] memory init: physical memory offset 0x100000000000
+[kernel] frame bitmap: 130804 frames, 16352 bytes at physical 0x1780000
+[kernel] frame allocator ready
+[kernel] frame allocator self-test: allocate/deallocate OK
+[kernel] active page tables captured from CR3
+[kernel] initial heap pages mapped
+[kernel] paging: active PML4 at 0x101000, physical offset 0x100000000000
+[kernel] frames: 128242 usable of 130804 addressable, 518 used, 127724 free (4 KiB each)
+[kernel] heap: 2 MiB mapped at 0x400000000000, 2 MiB usable, 0 B used
+[kernel] paging self-test: map/translate/unmap OK
+[boot] framebuffer size: 15 MiB
+[ OK ] Framebuffer initialized - 2560x1600 - 4 bpp - Bgr
+[ OK ] Virtual memory online - 127724 frames free
+[kernel] memory map: 106 regions, 501 MiB usable, 9 MiB reserved, 510 MiB total
+  Usable           0x000000000000 - 0x0000000A0000  640 KiB
+  Bootloader       0x000000100000 - 0x000000547000  4 MiB
+  Usable           0x000000547000 - 0x000000800000  2 MiB
+  Reserved (type 10) 0x000000800000 - 0x000000808000  32 KiB
+  Usable           0x000000808000 - 0x00000080B000  12 KiB
+  Reserved (type 10) 0x00000080B000 - 0x00000080C000  4 KiB
+  Usable           0x00000080C000 - 0x000000811000  20 KiB
+  Reserved (type 10) 0x000000811000 - 0x000000900000  956 KiB
+  Usable           0x000000900000 - 0x000001780000  14 MiB
+  Usable           0x000001780000 - 0x00001BB6C000  419 MiB
+  Usable           0x00001BB6C000 - 0x00001BB8C000  128 KiB
+  Usable           0x00001BB8C000 - 0x00001E6B7000  43 MiB
+  Bootloader       0x00001E6B7000 - 0x00001E75E000  668 KiB
+  Usable           0x00001E75E000 - 0x00001E78C000  184 KiB
+  Usable           0x00001E78C000 - 0x00001E7B5000  164 KiB
+  Usable           0x00001E7B5000 - 0x00001E958000  1 MiB
+  Usable           0x00001E958000 - 0x00001E95B000  12 KiB
+  Usable           0x00001E95B000 - 0x00001E961000  24 KiB
+  Usable           0x00001E961000 - 0x00001E962000  4 KiB
+  Usable           0x00001E962000 - 0x00001E963000  4 KiB
+  Usable           0x00001E963000 - 0x00001EA0B000  672 KiB
+  Usable           0x00001EA0B000 - 0x00001EA1C000  68 KiB
+  Usable           0x00001EA1C000 - 0x00001EA28000  48 KiB
+  Usable           0x00001EA28000 - 0x00001EA35000  52 KiB
+  Usable           0x00001EA35000 - 0x00001EA37000  8 KiB
+  Usable           0x00001EA37000 - 0x00001EA8A000  332 KiB
+  Usable           0x00001EA8A000 - 0x00001EAA6000  112 KiB
+  Usable           0x00001EAA6000 - 0x00001EAA7000  4 KiB
+  Usable           0x00001EAA7000 - 0x00001EAB1000  40 KiB
+  Usable           0x00001EAB1000 - 0x00001EAB3000  8 KiB
+  Usable           0x00001EAB3000 - 0x00001EAD9000  152 KiB
+  Usable           0x00001EAD9000 - 0x00001EAE0000  28 KiB
+  Usable           0x00001EAE0000 - 0x00001EAF6000  88 KiB
+  Usable           0x00001EAF6000 - 0x00001EAF7000  4 KiB
+  Usable           0x00001EAF7000 - 0x00001EB04000  52 KiB
+  Usable           0x00001EB04000 - 0x00001EB07000  12 KiB
+  Usable           0x00001EB07000 - 0x00001EB12000  44 KiB
+  Usable           0x00001EB12000 - 0x00001EB15000  12 KiB
+  Usable           0x00001EB15000 - 0x00001EB16000  4 KiB
+  Usable           0x00001EB16000 - 0x00001EB17000  4 KiB
+  Usable           0x00001EB17000 - 0x00001EB22000  44 KiB
+  Usable           0x00001EB22000 - 0x00001EB25000  12 KiB
+  Usable           0x00001EB25000 - 0x00001EB29000  16 KiB
+  Usable           0x00001EB29000 - 0x00001EB2B000  8 KiB
+  Usable           0x00001EB2B000 - 0x00001EB3E000  76 KiB
+  Usable           0x00001EB3E000 - 0x00001EB40000  8 KiB
+  Usable           0x00001EB40000 - 0x00001EB49000  36 KiB
+  Usable           0x00001EB49000 - 0x00001EB4B000  8 KiB
+  Usable           0x00001EB4B000 - 0x00001EB61000  88 KiB
+  Usable           0x00001EB61000 - 0x00001EB63000  8 KiB
+  Usable           0x00001EB63000 - 0x00001EB6D000  40 KiB
+  Usable           0x00001EB6D000 - 0x00001EB75000  32 KiB
+  Usable           0x00001EB75000 - 0x00001EB91000  112 KiB
+  Usable           0x00001EB91000 - 0x00001EB97000  24 KiB
+  Usable           0x00001EB97000 - 0x00001EB9D000  24 KiB
+  Usable           0x00001EB9D000 - 0x00001EB9E000  4 KiB
+  Usable           0x00001EB9E000 - 0x00001EB9F000  4 KiB
+  Usable           0x00001EB9F000 - 0x00001EBA3000  16 KiB
+  Usable           0x00001EBA3000 - 0x00001EBB5000  72 KiB
+  Usable           0x00001EBB5000 - 0x00001EBB7000  8 KiB
+  Usable           0x00001EBB7000 - 0x00001EBBA000  12 KiB
+  Usable           0x00001EBBA000 - 0x00001EBBD000  12 KiB
+  Usable           0x00001EBBD000 - 0x00001EBCC000  60 KiB
+  Usable           0x00001EBCC000 - 0x00001EBD1000  20 KiB
+  Usable           0x00001EBD1000 - 0x00001EBE7000  88 KiB
+  Usable           0x00001EBE7000 - 0x00001EBE9000  8 KiB
+  Usable           0x00001EBE9000 - 0x00001EBEA000  4 KiB
+  Usable           0x00001EBEA000 - 0x00001EBEB000  4 KiB
+  Usable           0x00001EBEB000 - 0x00001EBF8000  52 KiB
+  Usable           0x00001EBF8000 - 0x00001EBFC000  16 KiB
+  Usable           0x00001EBFC000 - 0x00001EC00000  16 KiB
+  Usable           0x00001EC00000 - 0x00001EE03000  2 MiB
+  Usable           0x00001EE03000 - 0x00001EE1B000  96 KiB
+  Usable           0x00001EE1B000 - 0x00001EE1D000  8 KiB
+  Usable           0x00001EE1D000 - 0x00001EE1F000  8 KiB
+  Usable           0x00001EE1F000 - 0x00001EE32000  76 KiB
+  Usable           0x00001EE32000 - 0x00001EE34000  8 KiB
+  Usable           0x00001EE34000 - 0x00001F234000  4 MiB
+  Usable           0x00001F234000 - 0x00001F238000  16 KiB
+  Usable           0x00001F238000 - 0x00001F239000  4 KiB
+  Usable           0x00001F239000 - 0x00001F23D000  16 KiB
+  Usable           0x00001F23D000 - 0x00001F243000  24 KiB
+  Usable           0x00001F243000 - 0x00001F24D000  40 KiB
+  Usable           0x00001F24D000 - 0x00001F24E000  4 KiB
+  Usable           0x00001F24E000 - 0x00001F250000  8 KiB
+  Usable           0x00001F250000 - 0x00001F252000  8 KiB
+  Usable           0x00001F252000 - 0x00001F255000  12 KiB
+  Usable           0x00001F255000 - 0x00001F4ED000  2 MiB
+  Reserved (type 6) 0x00001F4ED000 - 0x00001F5ED000  1 MiB
+  Reserved (type 5) 0x00001F5ED000 - 0x00001F6ED000  1 MiB
+  Reserved (type 0) 0x00001F6ED000 - 0x00001F76D000  512 KiB
+  Reserved (type 9) 0x00001F76D000 - 0x00001F77F000  72 KiB
+  Reserved (type 10) 0x00001F77F000 - 0x00001F7FF000  512 KiB
+  Usable           0x00001F7FF000 - 0x00001FE00000  6 MiB
+  Usable           0x00001FE00000 - 0x00001FE6F000  444 KiB
+  Usable           0x00001FE6F000 - 0x00001FE8F000  128 KiB
+  Usable           0x00001FE8F000 - 0x00001FEC2000  204 KiB
+  Reserved (type 0) 0x00001FEC2000 - 0x00001FEC6000  16 KiB
+  Reserved (type 10) 0x00001FEC6000 - 0x00001FEC8000  8 KiB
+  Usable           0x00001FEC8000 - 0x00001FEC9000  4 KiB
+  Usable           0x00001FEC9000 - 0x00001FEDA000  68 KiB
+  Usable           0x00001FEDA000 - 0x00001FEF4000  104 KiB
+  Reserved (type 6) 0x00001FEF4000 - 0x00001FF78000  528 KiB
+  Reserved (type 10) 0x00001FF78000 - 0x000020000000  544 KiB
+  Reserved (type 11) 0x0000FFC00000 - 0x000100000000  4 MiB
+  Reserved (type 0) 0x00FD00000000 - 0x010000000000  12 GiB
+[ OK ] Memory map loaded - 106 regions - 501 MiB usable
+[mouse] PS/2 auxiliary device streaming on IRQ12
 [ OK ] Interrupts initialized - IDT loaded, PIC remapped, PIT at 100 Hz
-[ OK ] Input subsystem initialized - PS/2 keyboard on IRQ1 - 0 keys
+[ OK ] Input subsystem initialized - PS/2 keyboard IRQ1, mouse IRQ12
 [ OK ] CPU identified - AuthenticAMD - family 15 model 107
 [ OK ] Desktop environment initialized - Noor Desktop 0.1.0
 [desktop] handing over to Noor Desktop
