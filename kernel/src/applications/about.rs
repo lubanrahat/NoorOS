@@ -72,8 +72,8 @@ impl About {
             y,
             w,
             "NoorOS is a minimal graphical educational operating system built using Rust to \
-             demonstrate fundamental operating system concepts, kernel development, memory \
-             management and framebuffer-based desktop rendering.",
+             demonstrate fundamental operating system concepts, virtual memory, preemptive \
+             multitasking, an in-memory file system and framebuffer-based desktop rendering.",
             1,
             TEXT_DIM,
             4,

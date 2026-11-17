@@ -32,18 +32,29 @@ simulation: the kernel is the program.
   arrow cursor drawn with save-under (so it leaves no trails), and window
   hit-testing: taskbar launch, launcher rows, click-to-focus, drag by title bar
   and a per-window `[X]` close button.
-- A boot screen whose eight `[ OK ]` lines are printed only after each subsystem
-  has actually initialised: framebuffer, virtual memory, memory map, interrupts,
-  input, CPUID, and the desktop.
+- A boot screen whose nine `[ OK ]` lines are printed only after each subsystem
+  has actually initialised: framebuffer, virtual memory, memory map, scheduler,
+  MemFS, interrupts, input, CPUID, and the desktop.
 - A bitmap physical-frame allocator built from the bootloader's memory map,
   active 4-level page tables with `map_page`/`unmap_page`/`translate_addr`, and
   a kernel heap whose pages are mapped on demand (so `String`, `Vec` and
   `format!` work in the kernel).
+- A preemptive round-robin scheduler driven by IRQ0: eight task slots, a 32 KiB
+  kernel stack per task, a 20 ms quantum, a hand-written assembly context switch,
+  and two background tasks (an uptime counter and a prime counter) that run
+  alongside the desktop. `ps` and Noor Monitor show each task's state, CPU time
+  and remaining slice.
+- MemFS, an in-memory virtual file system with a tree of inodes, directories and
+  regular files, path traversal such as `/home/noor/welcome.txt`, and
+  `create`/`read`/`write`/`delete` operations. It is preloaded with
+  `/readme.txt`, `/etc/os-release`, `/etc/motd`, `/sys/info` (generated from live
+  kernel state) and `/home/noor/welcome.txt`, and is driven by `ls`, `cat`,
+  `touch`, `mkdir`, `rm` and `echo "text" > /file`.
 - A framebuffer graphics engine with 24/32-bit pixel-format handling, integer
   scaling, alpha blending, rounded panels, gradients and a `font8x8` bitmap font.
 - A window manager with z-order, focus, a floating taskbar, a top status bar, a
   modal launcher and five applications.
-- A shell with ten commands, scrollback, input history, line editing and
+- A shell with sixteen commands, scrollback, input history, line editing and
   honest output for unavailable features.
 
 Everything above was verified by booting the release image in QEMU, not by
@@ -55,10 +66,14 @@ NoorOS 0.1.0 is honest about its scope. It does **not** have:
 
 - demand paging, guard pages, or swapping (the heap grows explicitly when an
   allocation needs more pages, rather than on a page fault),
-- user mode, processes, scheduling, or system calls,
+- user mode, isolated processes, or system calls. The scheduler runs kernel
+  threads in one address space: a buggy task can still corrupt another task or
+  the kernel,
+- persistent storage. MemFS lives in RAM, so every file disappears on reset;
+  there is no disk driver,
 - GPU acceleration, a compositor, window damage tracking, or double buffering of
   arbitrary windows,
-- networking, storage drivers, a filesystem, sound, or SMP.
+- networking, sound, USB input, or SMP.
 
 The `memory` command reports physical RAM, frame usage, heap growth and a live
 virtual-to-physical translation. Noor Settings states that it is informational
@@ -139,6 +154,13 @@ Mouse:
 | `version` | Kernel version and build target |
 | `echo <text>` | Print text |
 | `uptime` | PIT ticks, uptime and RTC clock |
+| `ls [path]` | List a directory (defaults to `/`) |
+| `cat <file>` | Print a file |
+| `touch <file>` | Create an empty file |
+| `mkdir <dir>` | Create a directory |
+| `rm <file>` | Delete a file or directory (recursively) |
+| `echo "text" > <file>` | Write text to a file |
+| `ps` | List tasks, states, CPU time and scheduler stats |
 | `shutdown` | ACPI power-off (QEMU exits) |
 | `reboot` | Reset the machine through the 8042 controller |
 
@@ -184,6 +206,8 @@ error, Alt+Tab and the mouse sequence, is in [`screenshots/demo/`](screenshots/d
 │       ├── drivers/      Framebuffer, serial, keyboard, mouse, PIT, RTC, CPUID, power
 │       ├── interrupts/   IDT, exceptions, PIC, IRQ0/IRQ1/IRQ12
 │       ├── memory/       Frame allocator, active page tables, growable heap
+│       ├── tasking/      Preemptive round-robin scheduler, IRQ0 switch, demo tasks
+│       ├── fs/           MemFS: inode tree, paths, create/read/write/delete
 │       ├── graphics/     Canvas, primitives, text/fonts, branding
 │       ├── desktop/      Window manager, taskbar, launcher, mouse cursor
 │       ├── applications/ Terminal, Monitor, Settings, About, shared widgets
@@ -203,11 +227,13 @@ python3 scripts/capture.py /tmp/noor-boot --delay 2.5
 ```
 
 The interactive demo script opens the terminal, runs `help`, `info`, `memory`,
-`version`, `uptime`, an unknown command, then Monitor, Settings, About, Alt+Tab
-and the Launcher. It then drives the mouse through QEMU's monitor: click a
-launcher row, drag the terminal by its title bar, close it with `[X]`, raise
-Noor Monitor by clicking its title bar, and launch the terminal from the
-taskbar, taking a screenshot after each step.
+`version`, `uptime`, then exercises MemFS (`ls /`, `cat /etc/os-release`,
+`cat /readme.txt`, `echo "hello noor" > /notes.txt`, `cat /notes.txt`,
+`rm /notes.txt`, `mkdir /demo`, `ls /`), prints the process table with `ps`, and
+then opens Monitor, Settings, About, Alt+Tab and the Launcher. It then drives the
+mouse through QEMU's monitor: click a launcher row, drag the terminal by its
+title bar, close it with `[X]`, raise Noor Monitor by clicking its title bar, and
+launch the terminal from the taskbar, taking a screenshot after each step.
 
 Verified during development:
 
@@ -216,6 +242,13 @@ Verified during development:
 - `reboot` resets the guest and returns to a fresh desktop with uptime 1 s.
 - The terminal reports 506 MiB usable RAM, 11 regions, 129k allocatable 4 KiB
   frames, a heap that grew from 2 MiB to about 4.6 MiB, and live translations.
+- The scheduler reports three tasks (`desktop`, `uptime`, `primes`), equal CPU
+  time, thousands of context switches and a 20 ms quantum. The `ps` and Monitor
+  evidence were captured from the running image.
+- MemFS was exercised end to end: `ls /`, `cat /etc/os-release`,
+  `cat /readme.txt`, `echo "persist me" > /notes.txt`, `cat /notes.txt`,
+  `rm /notes.txt`, `mkdir /demo` and a second `ls /` all returned the expected
+  results, and `ps`/Monitor reported the live file and directory counts.
 - The mouse path was verified with QEMU monitor `mouse_move`/`mouse_button`:
   the cursor tracks 1:1 with injected motion, a leave-and-return move restores
   the framebuffer pixel for pixel (no trails), and every hit-test listed in

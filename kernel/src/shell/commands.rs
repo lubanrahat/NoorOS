@@ -10,8 +10,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::drivers::{cpu, framebuffer, keyboard, mouse, rtc, timer};
-use crate::memory;
-use crate::util;
+use crate::{fs, memory, tasking, util};
 use x86_64::VirtAddr;
 
 use super::parser::parse;
@@ -57,7 +56,12 @@ impl Output {
 }
 
 pub fn execute(input: &str) -> Output {
-    let command = parse(input);
+    let trimmed = input.trim();
+    if let Some((left, target)) = split_redirection(trimmed) {
+        return redirect(left, target);
+    }
+
+    let command = parse(trimmed);
     if command.is_empty() {
         return Output::text(Vec::new());
     }
@@ -78,9 +82,21 @@ pub fn execute(input: &str) -> Output {
     } else if command.matches("version") {
         version()
     } else if command.matches("echo") {
-        Output::message(command.args)
+        Output::message(unquote(command.args))
     } else if command.matches("uptime") {
         uptime()
+    } else if command.matches("ls") {
+        ls(command.args)
+    } else if command.matches("cat") {
+        cat(command.args)
+    } else if command.matches("touch") {
+        touch(command.args)
+    } else if command.matches("rm") {
+        rm(command.args)
+    } else if command.matches("mkdir") {
+        mkdir(command.args)
+    } else if command.matches("ps") {
+        ps()
     } else if command.matches("shutdown") {
         shutdown()
     } else if command.matches("reboot") {
@@ -90,32 +106,66 @@ pub fn execute(input: &str) -> Output {
     }
 }
 
-fn help() -> Output {
-    let mut lines = vec![
-        String::from("NOOR TERMINAL"),
-        String::new(),
-        String::from("Available Commands:"),
-        String::new(),
-    ];
-    let commands: [(&str, &str); 9] = [
-        ("help", "Show available commands"),
-        ("clear", "Clear terminal"),
-        ("about", "About NoorOS"),
-        ("info", "System information"),
-        ("memory", "Memory information"),
-        ("version", "Kernel version"),
-        ("echo", "Print text"),
-        ("uptime", "System uptime"),
-        ("shutdown", "Power off the machine (ACPI)"),
-    ];
-    for (name, description) in commands {
-        lines.push(format!("  {name:<10} {description}"));
+/// Splits `echo "text" > /file` at the first `>` outside double quotes.
+fn split_redirection(input: &str) -> Option<(&str, &str)> {
+    let mut quoted = false;
+    for (index, ch) in input.char_indices() {
+        match ch {
+            '"' => quoted = !quoted,
+            '>' if !quoted => return Some((input[..index].trim(), input[index + 1..].trim())),
+            _ => {}
+        }
     }
-    lines.push(format!("  {:<10} {}", "reboot", "Restart the machine"));
+    None
+}
+
+fn redirect(left: &str, target: &str) -> Output {
+    if target.is_empty() {
+        return Output::error("usage: echo \"text\" > <file>");
+    }
+    if target.starts_with('>') {
+        return Output::error("Appending (>>) is not supported; use > to replace a file.");
+    }
+    let command = parse(left);
+    if !command.matches("echo") {
+        return Output::error("Only 'echo' supports > redirection.");
+    }
+    let text = unquote(command.args);
+    match fs::write_file(target, text.as_bytes()) {
+        Ok(bytes) => Output::message(&format!("Wrote {bytes} bytes to {target}")),
+        Err(error) => Output::error(&format!("{target}: {}", error.message())),
+    }
+}
+
+/// Removes one pair of surrounding double quotes from an echo argument.
+fn unquote(text: &str) -> &str {
+    let text = text.trim();
+    if text.len() >= 2 && text.starts_with('"') && text.ends_with('"') {
+        &text[1..text.len() - 1]
+    } else {
+        text
+    }
+}
+
+fn help() -> Output {
+    let rows = [
+        ("help", "commands", "clear", "clear screen"),
+        ("about", "about", "info", "system info"),
+        ("memory", "memory", "version", "version"),
+        ("echo", "print text", "uptime", "uptime/clock"),
+        ("ls", "list files", "cat", "print file"),
+        ("touch", "create file", "rm", "delete file"),
+        ("mkdir", "new dir", "ps", "processes"),
+        ("shutdown", "power off", "reboot", "restart"),
+    ];
+    let mut lines = vec![String::from("NOOR TERMINAL"), String::new()];
+    for (name, description, name2, description2) in rows {
+        lines.push(format!(
+            "  {name:<9} {description:<12} {name2:<9} {description2}"
+        ));
+    }
     lines.push(String::new());
-    lines.push(String::from(
-        "Noor Shell v0.1.0 - text after echo is printed.",
-    ));
+    lines.push(String::from("Files: echo \"text\" > /file  writes a file."));
     Output::text(lines)
 }
 
@@ -126,8 +176,8 @@ fn about() -> Output {
         String::new(),
         String::from("NoorOS is a minimal graphical educational OS"),
         String::from("built in Rust to demonstrate operating system"),
-        String::from("concepts: kernel development, memory management"),
-        String::from("and framebuffer-based desktop rendering."),
+        String::from("concepts: virtual memory, preemptive scheduling,"),
+        String::from("an in-memory file system and framebuffer rendering."),
         String::new(),
         format!("Kernel:       {KERNEL_NAME}"),
         String::from("Architecture: x86_64"),
@@ -137,6 +187,8 @@ fn about() -> Output {
 }
 
 fn version() -> Output {
+    let scheduler = tasking::stats();
+    let filesystem = fs::stats();
     Output::text(vec![
         format!("NoorOS {VERSION}"),
         format!("{KERNEL_NAME} {VERSION}"),
@@ -145,6 +197,14 @@ fn version() -> Output {
         format!(
             "Heap: {} mapped on demand",
             util::bytes(memory::heap_capacity())
+        ),
+        format!(
+            "Scheduler: round-robin, {} tasks, {} ms quantum",
+            scheduler.tasks, scheduler.quantum_ms
+        ),
+        format!(
+            "MemFS: {} files, {} directories",
+            filesystem.files, filesystem.directories
         ),
     ])
 }
@@ -221,6 +281,19 @@ fn info() -> Output {
     lines.push(format!(
         "  {:<15} active (bitmap frames + page tables)",
         "Virtual memory"
+    ));
+    let scheduler = tasking::stats();
+    lines.push(format!(
+        "  {:<15} round-robin, {} tasks, {} ms",
+        "Scheduler", scheduler.tasks, scheduler.quantum_ms
+    ));
+    let filesystem = fs::stats();
+    lines.push(format!(
+        "  {:<15} {} files, {} dirs, {}",
+        "MemFS",
+        filesystem.files,
+        filesystem.directories,
+        util::bytes(filesystem.bytes)
     ));
     lines.push(format!(
         "  {:<15} {} timer, {} kbd, {} mouse",
@@ -311,6 +384,141 @@ fn translation_line(label: &str, address: VirtAddr) -> String {
         ),
         None => format!("  {:<6} {:#018X} -> None", label, address.as_u64()),
     }
+}
+
+fn ls(path: &str) -> Output {
+    let path = if path.trim().is_empty() {
+        "/"
+    } else {
+        path.trim()
+    };
+    match fs::list(path) {
+        Ok(entries) => {
+            let mut lines = vec![
+                format!("PATH {path}"),
+                format!("  {:<20} {:<5} {:>8}", "NAME", "TYPE", "SIZE"),
+            ];
+            if entries.is_empty() {
+                lines.push(String::from("  (empty directory)"));
+            }
+            for entry in entries.iter().take(40) {
+                let kind = match entry.file_type {
+                    fs::FileType::Directory => "dir",
+                    fs::FileType::RegularFile => "file",
+                };
+                let size = match entry.file_type {
+                    fs::FileType::Directory => String::from("-"),
+                    fs::FileType::RegularFile => util::bytes(entry.size),
+                };
+                lines.push(format!(
+                    "  {:<20} {:<5} {:>8}",
+                    truncate(&entry.name, 20),
+                    kind,
+                    size
+                ));
+            }
+            if entries.len() > 40 {
+                lines.push(format!("  ... {} more entries", entries.len() - 40));
+            }
+            Output::text(lines)
+        }
+        Err(fs::FsError::NotADirectory) => match fs::stat(path) {
+            Ok(entry) => Output::text(vec![format!(
+                "{path}  file  {}  inode {}",
+                util::bytes(entry.size),
+                entry.inode
+            )]),
+            Err(error) => Output::error(&format!("{path}: {}", error.message())),
+        },
+        Err(error) => Output::error(&format!("{path}: {}", error.message())),
+    }
+}
+
+fn cat(path: &str) -> Output {
+    if path.trim().is_empty() {
+        return Output::error("usage: cat <file>");
+    }
+    let path = path.trim();
+    match fs::read_file(path) {
+        Ok(bytes) => {
+            let text = String::from_utf8_lossy(&bytes);
+            let total = text.lines().count();
+            let mut lines: Vec<String> = text.lines().take(120).map(String::from).collect();
+            if lines.is_empty() {
+                lines.push(String::from("(empty file)"));
+            } else if total > lines.len() {
+                lines.push(format!("... {} more lines", total - lines.len()));
+            }
+            Output::text(lines)
+        }
+        Err(error) => Output::error(&format!("{path}: {}", error.message())),
+    }
+}
+
+fn touch(path: &str) -> Output {
+    if path.trim().is_empty() {
+        return Output::error("usage: touch <file>");
+    }
+    let path = path.trim();
+    match fs::create_file(path) {
+        Ok(inode) => Output::message(&format!("Created {path} (inode {inode})")),
+        Err(fs::FsError::AlreadyExists) => Output::message(&format!("Already exists: {path}")),
+        Err(error) => Output::error(&format!("{path}: {}", error.message())),
+    }
+}
+
+fn rm(path: &str) -> Output {
+    if path.trim().is_empty() {
+        return Output::error("usage: rm <file>");
+    }
+    let path = path.trim();
+    match fs::delete(path) {
+        Ok(()) => Output::message(&format!("Removed {path}")),
+        Err(error) => Output::error(&format!("{path}: {}", error.message())),
+    }
+}
+
+fn mkdir(path: &str) -> Output {
+    if path.trim().is_empty() {
+        return Output::error("usage: mkdir <directory>");
+    }
+    let path = path.trim();
+    match fs::create_dir(path) {
+        Ok(inode) => Output::message(&format!("Created directory {path} (inode {inode})")),
+        Err(error) => Output::error(&format!("{path}: {}", error.message())),
+    }
+}
+
+fn ps() -> Output {
+    let tasks = tasking::tasks();
+    let scheduler = tasking::stats();
+    let demo = tasking::demo::stats();
+    let mut lines = vec![
+        format!(
+            "TASKS  round-robin @ {} Hz  -  {} switches",
+            timer::TICK_HZ,
+            scheduler.switches
+        ),
+        format!("  {:<4} {:<10} {:<9} {:>8}", "TID", "NAME", "STATE", "CPU"),
+    ];
+    for task in &tasks {
+        lines.push(format!(
+            "  {:<4} {:<10} {:<9} {:>6} ms",
+            task.tid,
+            task.name,
+            task.state.name(),
+            task.cpu_ticks * tasking::TICK_MS
+        ));
+    }
+    lines.push(String::new());
+    lines.push(format!("Uptime counter: {} ticks", demo.uptime_ticks));
+    lines.push(format!("Primes found:   {}", demo.primes));
+    lines.push(format!(
+        "Quantum:        {} ms ({} ticks)",
+        scheduler.quantum_ms,
+        tasking::QUANTUM_TICKS
+    ));
+    Output::text(lines)
 }
 
 fn uptime() -> Output {

@@ -14,7 +14,7 @@ use crate::graphics::colors::*;
 use crate::graphics::primitives::{fill_rect, fill_rect_alpha, fill_rounded_rect};
 use crate::graphics::text::{draw_text, text_width};
 use crate::graphics::{Canvas, Rect};
-use crate::{memory, util};
+use crate::{fs, memory, tasking, util};
 
 const PAD: i32 = 16;
 
@@ -247,6 +247,18 @@ fn system(canvas: &mut Canvas, area: Rect) {
         ("Heap in use", util::bytes(heap.used).to_string()),
         ("Heap free", util::bytes(heap.free).to_string()),
         ("Frames free", format!("{}", frames.free)),
+        (
+            "Scheduler",
+            format!("round-robin, {} tasks", tasking::stats().tasks)
+        ),
+        (
+            "MemFS",
+            format!(
+                "{} files, {} dirs",
+                fs::stats().files,
+                fs::stats().directories
+            )
+        ),
         ("Uptime", util::uptime(timer::uptime_ms())),
         ("PIT frequency", format!("{} Hz", timer::TICK_HZ)),
     ];
@@ -269,7 +281,7 @@ fn system(canvas: &mut Canvas, area: Rect) {
         area.w,
         "Virtual memory is active: a bitmap frame allocator owns physical memory, the active \
          PML4 is edited through the bootloader's physical-memory mapping, and the kernel heap is \
-         mapped on demand.",
+         mapped on demand. The PIT preempts tasks round-robin, and MemFS keeps files in RAM.",
         1,
         TEXT_DIM,
         3,

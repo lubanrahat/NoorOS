@@ -10,7 +10,7 @@ use spin::{Mutex, Once};
 use x86_64::instructions::port::Port;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
-use crate::drivers::{keyboard, mouse, timer};
+use crate::drivers::{keyboard, mouse};
 
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
@@ -53,7 +53,13 @@ fn build_idt() -> InterruptDescriptorTable {
     idt.general_protection_fault
         .set_handler_fn(general_protection_fault_handler);
     idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
-    idt[InterruptIndex::Timer.as_u8()].set_handler_fn(timer_handler);
+    // IRQ0 uses a hand-written assembly entry so it can switch stacks while
+    // returning from the interrupt. `set_handler_fn` cannot express that.
+    // SAFETY: the address is the IRQ0 trampoline defined in `tasking`, which
+    // builds the frame `timer_tick_from_irq` expects and returns with `iretq`.
+    unsafe {
+        idt[InterruptIndex::Timer.as_u8()].set_handler_addr(crate::tasking::timer_handler_addr());
+    }
     idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_handler);
     idt[InterruptIndex::Mouse.as_u8()].set_handler_fn(mouse_handler);
     idt
@@ -85,8 +91,11 @@ fn end_of_interrupt(index: InterruptIndex) {
     }
 }
 
-extern "x86-interrupt" fn timer_handler(_frame: InterruptStackFrame) {
-    timer::on_interrupt();
+/// Acknowledges IRQ0 from the assembly timer trampoline.
+///
+/// The trampoline calls this before the scheduler switch so the PIC can deliver
+/// the next tick while another task is running.
+pub(crate) fn acknowledge_timer() {
     end_of_interrupt(InterruptIndex::Timer);
 }
 

@@ -17,11 +17,13 @@ mod applications;
 mod boot;
 mod desktop;
 mod drivers;
+mod fs;
 mod graphics;
 mod interrupts;
 mod kernel;
 mod memory;
 mod shell;
+mod tasking;
 mod util;
 
 use bootloader_api::{BootInfo, BootloaderConfig, entry_point};

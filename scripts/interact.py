@@ -65,6 +65,16 @@ class Monitor:
                 key = "spc"
             elif ch == "-":
                 key = "minus"
+            elif ch == "/":
+                key = "slash"
+            elif ch == ".":
+                key = "dot"
+            elif ch == ">":
+                key = "shift-dot"
+            elif ch == '"':
+                key = "shift-apostrophe"
+            elif ch == "_":
+                key = "shift-minus"
             elif ch.isupper():
                 key = f"shift-{ch.lower()}"
             else:
@@ -180,53 +190,86 @@ def main():
         time.sleep(2.5)
         mon.shot(os.path.join(out, "06-version-uptime.ppm"))
 
+        # --- MemFS -------------------------------------------------------
+        mon.type("ls /")
+        mon.key("ret")
+        time.sleep(1.5)
+        mon.type("cat /etc/os-release")
+        mon.key("ret")
+        time.sleep(1.5)
+        mon.type("cat /readme.txt")
+        mon.key("ret")
+        time.sleep(1.5)
+        mon.type('echo "hello noor" > /notes.txt')
+        mon.key("ret")
+        time.sleep(1.5)
+        mon.type("cat /notes.txt")
+        mon.key("ret")
+        time.sleep(1.5)
+        mon.type("rm /notes.txt")
+        mon.key("ret")
+        time.sleep(1.5)
+        mon.type("mkdir /demo")
+        mon.key("ret")
+        time.sleep(1.5)
+        mon.type("ls /")
+        mon.key("ret")
+        time.sleep(2.5)
+        mon.shot(os.path.join(out, "07-memfs.ppm"))
+
+        # --- Scheduler ---------------------------------------------------
+        mon.type("ps")
+        mon.key("ret")
+        time.sleep(2.5)
+        mon.shot(os.path.join(out, "08-ps.ppm"))
+
         mon.type("nonsense")
         mon.key("ret")
         time.sleep(2.5)
-        mon.shot(os.path.join(out, "07-unknown.ppm"))
+        mon.shot(os.path.join(out, "09-unknown.ppm"))
 
         mon.key("f3")  # Noor Monitor
         time.sleep(2.5)
-        mon.shot(os.path.join(out, "08-monitor.ppm"))
+        mon.shot(os.path.join(out, "10-monitor.ppm"))
 
         mon.key("f4")  # Noor Settings
         time.sleep(2.5)
-        mon.shot(os.path.join(out, "09-settings.ppm"))
+        mon.shot(os.path.join(out, "11-settings.ppm"))
 
         mon.key("f5")  # Noor About
         time.sleep(2.5)
-        mon.shot(os.path.join(out, "10-about.ppm"))
+        mon.shot(os.path.join(out, "12-about.ppm"))
 
         mon.key("alt-tab")
         time.sleep(2.5)
-        mon.shot(os.path.join(out, "11-alt-tab.ppm"))
+        mon.shot(os.path.join(out, "13-alt-tab.ppm"))
 
         mon.key("f1")  # Noor Launcher
         time.sleep(2.5)
-        mon.shot(os.path.join(out, "12-launcher.ppm"))
+        mon.shot(os.path.join(out, "14-launcher.ppm"))
 
         # --- Mouse -------------------------------------------------------
         # Launcher is open with the keyboard selection on Noor Terminal.
         mon.move_to(640, 260)
-        mon.shot(os.path.join(out, "13-mouse-launcher.ppm"))
+        mon.shot(os.path.join(out, "15-mouse-launcher.ppm"))
         mon.click_at(640, 260)  # click the Noor Terminal row
 
         # Drag the focused terminal by its title bar.
         mon.drag((500, 120), (600, 200))
-        mon.shot(os.path.join(out, "14-mouse-drag.ppm"))
+        mon.shot(os.path.join(out, "16-mouse-drag.ppm"))
 
         # The window moved with the pointer: its close button is now at
         # (290 + 900 - 33) + 10, (187 + 7) + 10.
         mon.click_at(1167, 204)
-        mon.shot(os.path.join(out, "15-mouse-close.ppm"))
+        mon.shot(os.path.join(out, "17-mouse-close.ppm"))
 
         # Raise Noor Monitor by clicking its (mostly hidden) title bar.
         mon.click_at(250, 90)
-        mon.shot(os.path.join(out, "16-mouse-zorder.ppm"))
+        mon.shot(os.path.join(out, "18-mouse-zorder.ppm"))
 
         # Launch Noor Terminal from the taskbar icon.
         mon.click_at(435, 675)
-        mon.shot(os.path.join(out, "17-mouse-taskbar.ppm"))
+        mon.shot(os.path.join(out, "19-mouse-taskbar.ppm"))
 
         mon.command("quit")
     finally:

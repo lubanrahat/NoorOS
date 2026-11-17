@@ -14,7 +14,7 @@ use crate::boot::BootScreen;
 use crate::desktop;
 use crate::drivers::{cpu, framebuffer, keyboard, mouse, serial, timer};
 use crate::interrupts;
-use crate::{memory, util};
+use crate::{fs, memory, tasking, util};
 
 pub fn start(boot_info: &'static mut BootInfo) -> ! {
     serial::init();
@@ -94,6 +94,53 @@ pub fn start(boot_info: &'static mut BootInfo) -> ! {
             "{} regions - {} usable",
             map.regions.len(),
             util::bytes(map.usable_bytes)
+        ),
+    );
+
+    // --- Tasks and filesystem ----------------------------------------------
+    // Both allocate, so they run after the heap and memory-map snapshot. The
+    // scheduler must exist before IRQ0 is unmasked below.
+    if let Err(error) = tasking::init() {
+        serial_println!("[fatal] scheduler initialisation failed: {error}");
+        crate::kernel::panic::halt();
+    }
+    let scheduler = tasking::stats();
+    serial_println!(
+        "[kernel] scheduler: round-robin, {} tasks, {} ms quantum, {} Hz",
+        scheduler.tasks,
+        scheduler.quantum_ms,
+        timer::TICK_HZ
+    );
+    boot.ok(
+        "Scheduler online",
+        &alloc::format!(
+            "{} tasks - {} ms quantum",
+            scheduler.tasks,
+            scheduler.quantum_ms
+        ),
+    );
+
+    if let Err(error) = fs::init() {
+        serial_println!("[fatal] MemFS initialisation failed: {}", error.message());
+        crate::kernel::panic::halt();
+    }
+    if let Err(error) = fs::self_test() {
+        serial_println!("[fatal] {error}");
+        crate::kernel::panic::halt();
+    }
+    let filesystem = fs::stats();
+    serial_println!(
+        "[kernel] MemFS: {} files, {} directories, {} in RAM",
+        filesystem.files,
+        filesystem.directories,
+        util::bytes(filesystem.bytes)
+    );
+    boot.ok(
+        "MemFS mounted",
+        &alloc::format!(
+            "{} files - {} dirs",
+            filesystem.files,
+            filesystem.directories
         ),
     );
 

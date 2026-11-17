@@ -101,27 +101,33 @@ it:
 | 2 | Framebuffer | `BootInfo.framebuffer` is consumed and installed in the driver |
 | 3 | Virtual memory | Bitmap frame allocator built, CR3 captured, initial heap pages mapped |
 | 4 | Memory map | Bootloader regions classified; totals and a snapshot are stored |
-| 5 | Interrupts | IDT loaded, PIC remapped, PIT programmed to 100 Hz, interrupts enabled |
-| 6 | Input | `pc-keyboard` parser and PS/2 mouse configured; IRQ1/IRQ12 handlers installed |
-| 7 | CPU | `CPUID` leaves 0 and `0x8000_0002..4` read vendor, brand and family/model |
-| 8 | Desktop | `Desktop::new` builds the window manager and caches the wallpaper |
+| 5 | Scheduler | Desktop task created, two 32 KiB stacks allocated, `uptime` and `primes` spawned |
+| 6 | MemFS | Seed tree built and a create/read/write/delete self-test is run |
+| 7 | Interrupts | IDT loaded, PIC remapped, PIT programmed to 100 Hz, interrupts enabled |
+| 8 | Input | `pc-keyboard` parser and PS/2 mouse configured; IRQ1/IRQ12 handlers installed |
+| 9 | CPU | `CPUID` leaves 0 and `0x8000_0002..4` read vendor, brand and family/model |
+| 10 | Desktop | `Desktop::new` builds the window manager and caches the wallpaper |
 
 Serial is initialised before the boot screen exists, so the UART banner is logged
 but is not one of the visible `[ OK ]` steps.
 
-Two ordering constraints matter:
+Three ordering constraints matter:
 
 - **Memory must exist before the first allocation.** The boot screen stores
   `String` labels and details, and `alloc::format!` allocates. `memory::init()`
   therefore builds the frame allocator, captures the active PML4 and maps the
   initial heap pages before `BootScreen::new` and before any `format!`.
+- **The scheduler must exist before IRQ0 is unmasked.** `tasking::init` runs
+  after the heap (task stacks are heap allocations) and before
+  `interrupts::init` enables the PIT, so the first tick always finds a valid
+  scheduler and a saved desktop frame.
 - **The boot screen's background must be freed before the desktop allocates.**
   The modelled wallpaper is a full framebuffer-sized buffer. `drop(boot)` runs
   before `Desktop::new` caches its own wallpaper, so the heap holds only one of
   them at a time. The heap would grow on demand anyway, but freeing first avoids
   mapping pages that are no longer needed.
 
-The boot screen's eight `[ OK ]` lines are pushed only after each step returns.
+The boot screen's nine `[ OK ]` lines are pushed only after each step returns.
 There are no timed or fake messages; the visible boot order is the real call
 order in `init.rs`.
 
@@ -217,6 +223,12 @@ Each IRQ handler sends an end-of-interrupt to the PIC. Exceptions print the
 vector, error code and, for page faults, CR2 to the serial port and attempt to
 draw a fatal screen through `framebuffer::with_try`.
 
+IRQ0 is the exception: it does not use the `x86-interrupt` ABI. Its IDT gate
+points at `tasking::timer_irq_entry`, a hand-written assembly trampoline that
+saves all 15 general-purpose registers, calls the scheduler, replaces RSP with
+the next task's saved frame and `iretq`s into it. Section 6 explains the frame
+and the switch.
+
 ### 5.2 PIT
 
 Channel 0 is programmed in rate-generator mode with:
@@ -291,7 +303,224 @@ diagnostic channel during boot and can be redirected to a file by the launcher.
 The log includes the boot banner, framebuffer mode, heap location, every
 classified memory region, and every completed boot step.
 
-## 6. Graphics
+## 6. Tasks and scheduling
+
+NoorOS has one address space and one CPU, so a "task" is a kernel thread: its own
+stack plus a saved interrupt frame. There is no user mode and no memory
+isolation; a task that writes a wild pointer can still corrupt the kernel or
+another task. The scheduler exists to demonstrate preemption, not protection.
+
+### 6.1 Task control block
+
+`tasking::Task` stores:
+
+| Field | Meaning |
+|---|---|
+| `tid` | Stable task id (0 is the desktop) |
+| `name` | `desktop`, `uptime`, `primes` |
+| `state` | `Ready`, `Running`, `Blocked`, `Exited` |
+| `saved_rsp` | Stack pointer of the saved frame |
+| `regs` | Diagnostic copy of the frame, refreshed every tick |
+| `cpu_ticks` | PIT ticks charged to the task |
+| `quantum_ticks`, `quantum_left` | Slice length and remaining ticks |
+| `stack_base`, `stack_size` | The 32 KiB heap block |
+
+There are eight slots (`MAX_TASKS`). Task 0 is created by `tasking::init` with
+`state = Running` and `saved_rsp = 0`; its real frame is captured on the first
+IRQ0. `spawn` allocates a zeroed 32 KiB block from the heap, builds a frame at
+its top, and adds a `Ready` task.
+
+The quantum is two PIT ticks, i.e. 20 ms at 100 Hz. `pick_next` scans forward
+from the current slot and returns the next `Ready` or `Running` task, wrapping
+around; if nothing else is runnable it keeps the current task and gives it a
+fresh quantum.
+
+### 6.2 The interrupt frame and the context switch
+
+IRQ0 does **not** use the `x86-interrupt` ABI, because that ABI has no way to
+replace the return stack. Instead, the IDT gate points at this assembly
+trampoline (`tasking::timer_irq_entry`):
+
+```asm
+timer_irq_entry:
+    push rax
+    push rbx
+    ...
+    push r15
+    mov rdi, rsp            ; frame pointer argument
+    and rsp, -16            ; align for the SysV call
+    call timer_tick_from_irq
+    mov rsp, rax            ; switch to the next task's frame
+    pop r15
+    ...
+    pop rax
+    iretq
+```
+
+The saved frame is therefore:
+
+```text
+r15 r14 r13 r12 r11 r10 r9 r8 rbp rdi rsi rdx rcx rbx rax
+rip cs rflags rsp ss
+```
+
+The first 15 words are the pushes above. The last five are the words the CPU
+itself pushes on interrupt entry, and `iretq` pops all five. `SavedRegisters` in
+`tasking/mod.rs` mirrors this layout exactly.
+
+`timer_tick_from_irq` charges the tick, saves the frame, decrements the quantum,
+and returns either the same RSP or the next task's `saved_rsp`. It never
+allocates and never logs: it runs with interrupts disabled and may interrupt any
+task.
+
+A new task starts with a hand-built frame whose `rip` is `task_bootstrap`, whose
+`r12` holds the entry point, whose `cs` is the kernel code selector, whose
+`ss` is the kernel data selector, and whose `rsp` is the frame address. The
+frame address is 8 mod 16, so `task_bootstrap`'s `sub rsp, 8` aligns the stack
+and the called entry point sees the SysV ABI's 8 mod 16 at function entry.
+`rflags = 0x202` sets the reserved bit and IF, so `iretq` starts the task with
+interrupts enabled and it can be preempted from its first instruction.
+
+```asm
+task_bootstrap:
+    sub rsp, 8
+    call r12
+    call task_exit
+    ud2
+```
+
+`task_exit` marks the task `Exited` and halts in a loop; the next tick switches
+away. The stack is intentionally not freed, because freeing it would take the
+heap lock from a task that could be preempted. A future reaper task could reclaim
+exited stacks.
+
+### 6.3 Locking rules
+
+The scheduler is a `spin::Mutex<Scheduler>`. Every non-IRQ access goes through
+`with_scheduler`, which disables interrupts for the duration, so a task can never
+be preempted while holding the lock. The IRQ path takes the lock with IF already
+cleared by the interrupt gate. The tick path performs no allocation and no
+serial or framebuffer I/O, so it cannot deadlock on the heap, UART or graphics
+locks.
+
+The demo tasks only touch atomics (`UPTIME_TICKS`, `PRIMES_FOUND`). They never
+allocate, log or draw, so they are safe to preempt at any instruction.
+
+### 6.4 The two background tasks
+
+- `uptime_task` polls `timer::ticks()` and adds the delta to `UPTIME_TICKS`. It
+  spins rather than sleeping so there is real work to preempt.
+- `prime_task` counts primes below 50,000, then starts again, incrementing
+  `PRIMES_FOUND`.
+
+`ps` and Noor Monitor read these counters and the scheduler snapshot. In the
+verified run, three tasks each accumulated the same CPU time (about 3,020 ms
+after nine seconds) and the scheduler reported hundreds to thousands of context
+switches, which is the observable evidence that round-robin preemption is real.
+
+### 6.5 What is not saved
+
+The target disables the red zone and uses soft-float, so an interrupt cannot
+clobber live data below RSP and no SSE/FPU state has to be saved. If the kernel
+ever used SSE or floating point, the switch would need to save `xmm0..15` and
+`mxcsr` as well. There are no priorities, no blocking queues (the `Blocked` state
+is reserved), no per-task address space and no SMP.
+
+### 6.6 The triple fault this design produced
+
+The first version of the hand-built frame contained only `rip`, `cs` and
+`rflags`; it assumed a same-privilege interrupt pushes three words. QEMU's `-d
+int` log and a sentinel written above the frame showed the truth: `iretq` reads
+`rsp` and `ss` from the frame as well. With those slots zeroed, `iretq` loaded
+`RSP = 0`, `task_bootstrap` executed `sub rsp, 8`, and the following `call`
+faulted at `0xfffffffffffffff0`; the page fault then escalated to a double fault
+and a triple fault reset. Adding `rsp` and `ss` to `SavedRegisters` and setting
+them in `spawn` fixed it. The lesson: the frame layout is an ABI, and it must be
+verified against the CPU rather than inferred from the privilege level.
+
+## 7. MemFS
+
+MemFS is an in-memory virtual file system. It demonstrates paths, a directory
+tree, inodes and file operations without a block device. It is deliberately
+volatile: everything is created from RAM at boot and disappears on reset.
+
+### 7.1 Data model
+
+An `Inode` owns its metadata and, for a directory, its children:
+
+```rust
+pub enum FileType { RegularFile, Directory }
+
+pub struct Inode {
+    pub inode: u64,
+    pub name: String,
+    pub file_type: FileType,
+    pub data: Vec<u8>,          // files only
+    pub children: Vec<Inode>,   // directories only
+}
+```
+
+`DirEntry` is the read-only view returned by `ls`: name, type and size. The root
+is a directory named `/`. Inode numbers are allocated monotonically and are
+visible in `mkdir`/`touch` output.
+
+### 7.2 Paths
+
+Paths are absolute. `components` splits on `/`, ignores empty components and
+rejects `..`, so a path cannot escape the root. Traversal starts at the root and
+descends one component at a time; a missing component yields `NotFound`, and a
+component that is a file in the middle of a path yields `NotADirectory`.
+Examples: `/readme.txt`, `/etc/os-release`, `/home/noor/welcome.txt`.
+
+### 7.3 Operations
+
+| Function | Behaviour |
+|---|---|
+| `create_file(path)` | Fails with `AlreadyExists` if the name is taken |
+| `create_dir(path)` | Creates a directory under an existing parent |
+| `read_file(path)` | Returns a copy of the bytes; `IsADirectory` for a directory |
+| `write_file(path)` | Upserts: creates the file if missing, replaces the contents |
+| `delete(path)` | Removes a file or a directory recursively; root is `Protected` |
+| `list(path)` | Sorted `DirEntry` list for `ls` |
+| `exists(path)` | Used by the self-test and the shell |
+
+The whole tree sits behind one `spin::Mutex<Option<Inode>>`. Operations are
+short and never run in an interrupt handler. `write_file` and `create_file`
+allocate, so they are only called from normal task context.
+
+### 7.4 Seed files and the boot self-test
+
+`fs::init` builds:
+
+| Path | Content |
+|---|---|
+| `/readme.txt` | What MemFS is and the commands to try |
+| `/etc/os-release` | `NAME`, `VERSION`, `ID`, `PRETTY_NAME`, `ANSI_COLOR` |
+| `/etc/motd` | Tagline and version |
+| `/sys/info` | Generated at boot from live memory, scheduler and timer stats |
+| `/home/noor/welcome.txt` | A nested-directory example |
+
+`fs::self_test` then creates `/.memfs-self-test`, writes `noor`, reads it back,
+deletes it and asserts that it is gone. A failure aborts boot with a fatal
+message instead of leaving a half-working file system.
+
+### 7.5 Shell interface
+
+`ls [path]`, `cat <file>`, `touch <file>`, `mkdir <dir>`, `rm <path>` and
+`echo "text" > <file>` are implemented in `shell/commands.rs`. The redirection
+parser splits at the first `>` outside double quotes and rejects `>>`; only
+`echo` supports redirection. Output is coloured, and errors use the `FsError`
+message (`no such file or directory`, `already exists`, ...).
+
+### 7.6 Limits
+
+MemFS has no persistence, permissions, timestamps, symlinks, hard links, mount
+points, current directory, file descriptors, buffering or concurrency control
+beyond the single tree lock. It is a teaching VFS, not a disk file system. The
+roadmap's storage milestone adds a block device and a host-mountable FAT32 file
+system underneath a similar interface.
+
+## 8. Graphics
 
 NoorOS has its own immediate-mode renderer; there is no GPU, no hardware
 compositor and no graphics library.

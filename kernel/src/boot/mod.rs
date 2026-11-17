@@ -14,7 +14,7 @@ use crate::graphics::primitives::*;
 use crate::graphics::text::*;
 use crate::graphics::{Canvas, Rect};
 use crate::util;
-const MAX_STEPS: usize = 8;
+const MAX_STEPS: usize = 9;
 
 struct Step {
     label: String,
